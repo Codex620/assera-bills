@@ -1,4 +1,4 @@
-// Hydro One bill retriever, test version 4 (several logins, past bills).
+// Hydro One bill retriever, test version 5 (several logins, past bills).
 // Logs in once, visits every account, captures the current-bill PDF and probes "past bills".
 // Sends nothing, changes nothing. Prints a short, masked report. Secrets come from env vars.
 const { chromium } = require('playwright');
@@ -90,7 +90,7 @@ async function runLogin(browser, n, user, pass) {
     const count = await page.getByRole('button', { name: 'SELECT', exact: true }).count();
     log('SELECT buttons:', count);
 
-    for (let idx = 0; idx < Math.min(count, 4); idx++) {
+    for (let idx = 0; idx < Math.min(count, parseInt(process.env.ACCOUNT_LIMIT || '1', 10)); idx++) {
       log('--- ACCOUNT', idx + 1, accounts[idx] ? '(..' + accounts[idx].last4 + ')' : '', '---');
       captured.length = 0;
       try {
@@ -107,6 +107,7 @@ async function runLogin(browser, n, user, pass) {
         for (const c of captured) {
           log('  PDF', path.basename(c.file), c.size + ' bytes', c.url);
           log('  SUMMARY', JSON.stringify(pdfSummary(c.file)));
+          if (headPrinted < 2) { headPrinted++; log('  CURRENT BILL TOP LINES:', JSON.stringify(pdfHead(c.file))); }
         }
         if (!captured.length) {
           const t = await page.innerText('body').catch(() => '');
@@ -138,16 +139,22 @@ async function runLogin(browser, n, user, pass) {
         // expand the newest past bill and look for a PDF link inside
         captured.length = 0;
         try {
-          await page.locator('a[href="#billingDetails0"]').first().click({ timeout: 8000 });
+          const clicked = await page.evaluate(() => {
+            const el = document.querySelector('[href="#billingDetails0"], [data-target="#billingDetails0"], [data-bs-target="#billingDetails0"]');
+            if (!el) return 'no toggle element found';
+            el.click();
+            return 'clicked ' + el.tagName;
+          });
+          log('  expand toggle:', clicked);
           await sleep(page, 3000);
-          const det = await page.locator('#billingDetails0').innerText({ timeout: 5000 }).catch(() => '');
+          const det = await page.evaluate(() => (document.querySelector('#billingDetails0') || {}).textContent || 'no #billingDetails0 element');
           log('  EXPANDED BILL DETAILS:', mask(det).slice(0, 600));
-          const inner = await page.$$eval('#billingDetails0 a, #billingDetails0 button', (els) => els
+          const inner = await page.$$eval('#billingDetails0 a, #billingDetails0 button, #billingDetails0 [onclick]', (els) => els
             .map((e) => (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ') + ' -> ' + (e.getAttribute('href') || '').split('?')[0]));
           log('  LINKS INSIDE EXPANDED BILL:', mask(inner.join(' ;; ')).slice(0, 400) || 'NONE');
-          const target = page.locator('#billingDetails0').getByText(/view|download|pdf|bill/i).first();
+          const target = page.locator('#billingDetails0 a, #billingDetails0 button').filter({ hasText: /view|download|pdf|bill/i }).first();
           if (await target.count()) {
-            await target.click({ timeout: 8000 }).catch((e) => log('  click failed:', mask(e.message).slice(0, 80)));
+            await target.click({ timeout: 8000, force: true }).catch((e) => log('  click failed:', mask(e.message).slice(0, 80)));
             await sleep(page, 14000);
             log('  PDFs captured from past bill:', captured.length);
             for (const c of captured) {
