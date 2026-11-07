@@ -6,7 +6,8 @@ const log = console.log;
 
 const SITES = [
   { name: 'Bell', env: 'BELL_USER_1', urls: ['https://m.bell.ca/bbebillviewbille', 'https://identification.bell.ca/', 'https://www.bell.ca/'] },
-  { name: 'Videotron', env: 'VIDEOTRON_USER_1', urls: ['https://www.videotron.com/en/login'] },
+  { name: 'Videotron login 1 (personal)', env: 'VIDEOTRON_USER_1', urls: ['https://www.videotron.com/en/login'] },
+  { name: 'Videotron login 2 (Mako - not an Assera property account)', env: 'VIDEOTRON_USER_2', urls: ['https://www.videotron.com/en/login'] },
 ];
 
 async function look(page, url, envName) {
