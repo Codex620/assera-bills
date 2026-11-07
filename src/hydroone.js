@@ -1,7 +1,7 @@
-// Hydro One bill retriever, test version 6 (several logins, all accounts, last N bills each).
+// Hydro One bill retriever, test version 7 (several logins, all accounts, last N bills each).
 // Downloads bill PDFs into DATA_DIR/hydroone/<account last 4>/<bill date>_<amount>.pdf and prints a masked table.
 // Sends nothing, changes nothing. Secrets come from env vars HYDROONE_USER_n / HYDROONE_PASS_n.
-const { publish } = require('./reporter');
+const { publish, uploadBinary } = require('./reporter');
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -9,7 +9,8 @@ const { execFileSync } = require('child_process');
 
 const OUT = process.env.DATA_DIR || '/data';
 const ACCOUNT_LIMIT = parseInt(process.env.ACCOUNT_LIMIT || '4', 10);
-const BILL_LIMIT = parseInt(process.env.BILL_LIMIT || '3', 10);
+const BILL_LIMIT = parseInt(process.env.BILL_LIMIT || '6', 10);
+const ONLY = (process.env.ONLY_ACCOUNTS || '6653,6225').split(',').map((x) => x.trim()).filter(Boolean);
 const PICKER = 'https://www.hydroone.com/myaccount/select-account/?returnUrl=/myaccount';
 
 const mask = (s) => String(s || '')
@@ -83,9 +84,15 @@ async function runLogin(browser, n, user, pass) {
       .map((m) => ({ last4: m[1].slice(-4), addr: mask(m[2]).slice(0, 60) }));
     log('ACCOUNTS:', accounts.map((a) => '..' + a.last4 + ' ' + a.addr).join(' | ') || 'none parsed');
     const count = await page.getByRole('button', { name: 'SELECT', exact: true }).count();
+    if (!accounts.some((a) => ONLY.includes(a.last4))) {
+      log('  none of these accounts are needed right now; skipping this login');
+      await context.close();
+      return;
+    }
 
     for (let idx = 0; idx < Math.min(count, ACCOUNT_LIMIT); idx++) {
       const a = accounts[idx] || { last4: 'acct' + (idx + 1), addr: '' };
+      if (!ONLY.includes(a.last4)) { log('--- skipping account ..' + a.last4, '(not needed right now)'); continue; }
       log('--- ACCOUNT ..' + a.last4, a.addr, '---');
       try {
         await page.goto(PICKER, { waitUntil: 'load', timeout: 60000 }); await sleep(page, 8000);
@@ -131,7 +138,8 @@ async function runLogin(browser, n, user, pass) {
               fs.mkdirSync(dir, { recursive: true });
               const dest = path.join(dir, year + '-' + mm + '-' + String(day).padStart(2, '0') + '_' + row.amount + '.pdf');
               fs.copyFileSync(c.file, dest);
-              status = 'saved ' + path.relative(OUT, dest) + ' ' + c.size + 'b ' + JSON.stringify(parseBill(dest));
+              const up = await uploadBinary('hydroone-pdfs/' + a.last4 + '/' + path.basename(dest), fs.readFileSync(dest));
+              status = 'repo upload: ' + up + ' | saved ' + path.relative(OUT, dest) + ' ' + c.size + 'b ' + JSON.stringify(parseBill(dest));
             }
           } catch (e) { status = 'ERROR ' + mask(e.message).slice(0, 100); }
           log('  BILL', k + 1, row.date, '$' + row.amount, '=>', status);

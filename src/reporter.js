@@ -31,4 +31,20 @@ async function publish(name) {
   }
 }
 
-module.exports = { publish };
+async function uploadBinary(repoPath, buffer) {
+  const token = process.env.GITHUB_TOKEN;
+  const repo = process.env.REPORT_REPO;
+  if (!token || !repo) return 'not configured';
+  try {
+    const res = await fetch('https://api.github.com/repos/' + repo + '/contents/' + repoPath, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'User-Agent': 'assera-bills' },
+      body: JSON.stringify({ message: 'bill pdf ' + repoPath, content: buffer.toString('base64') }),
+    });
+    if (res.ok) return 'saved';
+    if (res.status === 422) return 'already there';
+    return 'HTTP ' + res.status;
+  } catch (e) { return 'failed ' + String(e.message).slice(0, 60); }
+}
+
+module.exports = { publish, uploadBinary };
