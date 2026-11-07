@@ -1,4 +1,4 @@
-// Hydro One bill retriever, test version 3 (supports several logins).
+// Hydro One bill retriever, test version 4 (several logins, past bills).
 // Logs in once, visits every account, captures the current-bill PDF and probes "past bills".
 // Sends nothing, changes nothing. Prints a short, masked report. Secrets come from env vars.
 const { chromium } = require('playwright');
@@ -28,6 +28,14 @@ function pdfSummary(file) {
     return { error: mask(e.message).slice(0, 120) };
   }
 }
+
+function pdfHead(file) {
+  try {
+    const txt = execFileSync('pdftotext', ['-layout', file, '-'], { encoding: 'utf8', timeout: 30000 });
+    return txt.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 45).map((l) => mask(l).slice(0, 100));
+  } catch (e) { return ['pdf read error']; }
+}
+let headPrinted = 0;
 
 async function runLogin(browser, n, user, pass) {
   log('=== LOGIN', n, '===');
@@ -119,6 +127,35 @@ async function runLogin(browser, n, user, pass) {
           .map((e) => (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ') + ' -> ' + (e.getAttribute('href') || '').split('?')[0])
           .filter((x) => /view|download|pdf|bill/i.test(x)));
         log('  PAST BILLS ITEMS:', mask([...new Set(items)].slice(0, 14).join(' ;; ')).slice(0, 700));
+
+        // show older months, then list every billed / payment row
+        try { await page.getByText(/Show \d+ more months/).first().click({ timeout: 6000 }); await sleep(page, 4000); } catch (e) {}
+        const hist = await page.innerText('body').catch(() => '');
+        const rowsTxt = [...hist.matchAll(/([A-Z][a-z]{2} \d{1,2}, \d{4})\s+(Billed amount|Payment received for)\s+\$([\d,]+\.\d{2})/g)]
+          .map((m) => m[1] + ' ' + (m[2].startsWith('Billed') ? 'BILLED' : 'PAID') + ' ' + m[3]);
+        log('  HISTORY ROWS (' + rowsTxt.length + '):', rowsTxt.join(' | '));
+
+        // expand the newest past bill and look for a PDF link inside
+        captured.length = 0;
+        try {
+          await page.locator('a[href="#billingDetails0"]').first().click({ timeout: 8000 });
+          await sleep(page, 3000);
+          const det = await page.locator('#billingDetails0').innerText({ timeout: 5000 }).catch(() => '');
+          log('  EXPANDED BILL DETAILS:', mask(det).slice(0, 600));
+          const inner = await page.$$eval('#billingDetails0 a, #billingDetails0 button', (els) => els
+            .map((e) => (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ') + ' -> ' + (e.getAttribute('href') || '').split('?')[0]));
+          log('  LINKS INSIDE EXPANDED BILL:', mask(inner.join(' ;; ')).slice(0, 400) || 'NONE');
+          const target = page.locator('#billingDetails0').getByText(/view|download|pdf|bill/i).first();
+          if (await target.count()) {
+            await target.click({ timeout: 8000 }).catch((e) => log('  click failed:', mask(e.message).slice(0, 80)));
+            await sleep(page, 14000);
+            log('  PDFs captured from past bill:', captured.length);
+            for (const c of captured) {
+              log('  PAST PDF', c.size + ' bytes', 'summary', JSON.stringify(pdfSummary(c.file)));
+              if (headPrinted < 2) { headPrinted++; log('  PDF TOP LINES:', JSON.stringify(pdfHead(c.file))); }
+            }
+          }
+        } catch (e) { log('  expand step note:', mask(e.message).slice(0, 120)); }
       } catch (e) {
         log('  Account ERROR:', mask(e.message).slice(0, 200));
       }
