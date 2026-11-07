@@ -5,11 +5,11 @@ const mask = (s) => String(s || '').replace(/\d{5,}/g, (m) => '..' + m.slice(-4)
 const log = console.log;
 
 const SITES = [
-  { name: 'Bell', urls: ['https://my.bell.ca/', 'https://www.bell.ca/Login', 'https://www.bell.ca/'] },
-  { name: 'Videotron', urls: ['https://www.videotron.com/en/login', 'https://id.videotron.com/', 'https://www.videotron.com/'] },
+  { name: 'Bell', env: 'BELL_USER_1', urls: ['https://m.bell.ca/bbebillviewbille', 'https://identification.bell.ca/', 'https://www.bell.ca/'] },
+  { name: 'Videotron', env: 'VIDEOTRON_USER_1', urls: ['https://www.videotron.com/en/login'] },
 ];
 
-async function look(page, url) {
+async function look(page, url, envName) {
   let ok = false;
   for (let i = 1; i <= 3 && !ok; i++) {
     try { await page.goto(url, { waitUntil: 'load', timeout: 60000 }); ok = true; }
@@ -42,6 +42,26 @@ async function look(page, url) {
       await status('after clicking login');
     } else log('    no visible login link/button found');
   }
+  // Step 2 of the test: type the EMAIL ONLY (never a password) into the first login box and click next.
+  const email = process.env[envName];
+  if (email && !(await page.$('input[type=password]'))) {
+    let box = null;
+    for (const f of page.frames()) {
+      const cand = f.locator('input:visible').filter({ has: f.locator('xpath=self::*') });
+      const el = f.locator('input[name=identifier], input[name=username], input[type=email], input[id*=ident i], input[id*=user i], input[id*=email i], input[type=text]:visible').first();
+      if (await el.count().catch(() => 0)) { box = { f, el }; break; }
+    }
+    if (box) {
+      await box.el.fill(email, { timeout: 8000 }).catch((e) => log('    could not type email:', mask(e.message).slice(0, 70)));
+      const next = box.f.locator('button:visible, input[type=submit]:visible').filter({ hasText: /next|continue|suivant|continuer|sign in|log in|submit/i }).first();
+      if (await next.count()) await next.click({ timeout: 8000 }).catch(() => {});
+      else await box.el.press('Enter').catch(() => {});
+      await page.waitForTimeout(15000);
+      await status('after typing email');
+      const t = await page.innerText('body').catch(() => '');
+      log('    page text:', mask(t).slice(0, 350));
+    } else log('    no email box found to type into');
+  } else if (!email) log('    (no ' + envName + ' set: skipping the email step)');
   return true;
 }
 
@@ -54,7 +74,7 @@ async function main() {
     const page = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
     for (const url of site.urls) {
       log('--- trying', url);
-      try { await look(page, url); } catch (e) { log('  ERROR:', mask(e.message).slice(0, 150)); }
+      try { await look(page, url, site.env); } catch (e) { log('  ERROR:', mask(e.message).slice(0, 150)); }
     }
     await page.context().close();
   }
