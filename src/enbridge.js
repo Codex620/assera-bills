@@ -1,4 +1,4 @@
-// Enbridge Gas bill retriever, test version 1. Logs in, looks around, tries to capture the current bill.
+// Enbridge Gas bill retriever, test version 2 (skips the optional MFA screen). Logs in, looks around, tries to capture the current bill.
 // Sends nothing, changes nothing. Prints a short masked report. Secrets come from env vars
 // ENBRIDGE_USER_1 / ENBRIDGE_PASS_1, then _2, _3.
 const { publish } = require('./reporter');
@@ -65,10 +65,20 @@ async function runLogin(browser, n, user, pass) {
     if (remember && (await remember.isChecked())) await remember.uncheck().catch(() => {});
     await page.click('#okta-signin-submit');
     await page.waitForTimeout(20000);
+    // Enbridge offers an OPTIONAL "enable multi-factor authentication" screen. Never enable it: skip it.
+    for (let tries = 0; tries < 3; tries++) {
+      const skip = page.getByRole('button', { name: /skip mfa/i }).first();
+      const skipAny = (await skip.count()) ? skip : page.getByText(/skip mfa/i).first();
+      if (await skipAny.count()) {
+        log('Optional MFA screen shown: clicking Skip MFA');
+        await skipAny.click({ timeout: 8000 }).catch((e) => log('skip click failed:', mask(e.message).slice(0, 80)));
+        await page.waitForTimeout(15000);
+      } else break;
+    }
     log('URL after login:', mask(page.url()).split('?')[0].slice(0, 110));
     log('Title:', mask(await page.title()));
     const lower = (await page.innerText('body').catch(() => '')).toLowerCase();
-    log('Asks for a code (2-step):', /verification code|security code|one-time|passcode|enter the code|text message|sms|verify it's you|authenticat/.test(lower));
+    log('Asks for a code (2-step):', /verification code|security code|one-time|passcode|enter the code|text message|sms|verify it's you/.test(lower));
     log('Error words seen:', /incorrect|invalid|locked|try again|unable to sign/.test(lower));
     log('PAGE:', await bodyTail('', 900));
     const items = await page.$$eval('a, button', (els) => els
