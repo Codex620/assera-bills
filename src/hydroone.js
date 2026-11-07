@@ -1,4 +1,4 @@
-// Hydro One bill retriever, test version 2.
+// Hydro One bill retriever, test version 3 (supports several logins).
 // Logs in once, visits every account, captures the current-bill PDF and probes "past bills".
 // Sends nothing, changes nothing. Prints a short, masked report. Secrets come from env vars.
 const { chromium } = require('playwright');
@@ -6,8 +6,6 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const user = process.env.HYDROONE_USER_1;
-const pass = process.env.HYDROONE_PASS_1;
 const OUT = process.env.DATA_DIR || '/data';
 const PICKER = 'https://www.hydroone.com/myaccount/select-account/?returnUrl=/myaccount';
 
@@ -31,14 +29,8 @@ function pdfSummary(file) {
   }
 }
 
-async function main() {
-  log('REPORT START');
-  if (!user || !pass) {
-    log('Missing HYDROONE_USER_1 or HYDROONE_PASS_1 in Coolify settings.');
-    return;
-  }
-  try { fs.mkdirSync(OUT, { recursive: true }); } catch (e) {}
-  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+async function runLogin(browser, n, user, pass) {
+  log('=== LOGIN', n, '===');
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
   const page = await context.newPage();
 
@@ -64,7 +56,6 @@ async function main() {
   });
 
   try {
-    await sleep(page, 20000); // let the server network settle after start
     let opened = false;
     for (let i = 1; i <= 5 && !opened; i++) {
       try {
@@ -135,6 +126,23 @@ async function main() {
   } catch (e) {
     log('ERROR:', mask(e.message).slice(0, 300));
   }
+  await context.close();
+}
+
+async function main() {
+  log('REPORT START');
+  const logins = [];
+  for (let n = 1; n <= 5; n++) {
+    const u = process.env['HYDROONE_USER_' + n];
+    const p = process.env['HYDROONE_PASS_' + n];
+    if (u && p) logins.push({ n, u, p });
+  }
+  if (!logins.length) { log('No HYDROONE_USER_1 / HYDROONE_PASS_1 found in Coolify settings.'); return; }
+  log('Logins configured:', logins.length);
+  try { fs.mkdirSync(OUT, { recursive: true }); } catch (e) {}
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  await new Promise((r) => setTimeout(r, 20000)); // let the server network settle after start
+  for (const l of logins) await runLogin(browser, l.n, l.u, l.p);
   await browser.close();
 }
 
