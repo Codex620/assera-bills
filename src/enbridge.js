@@ -1,4 +1,4 @@
-// Enbridge Gas bill retriever, test version 2 (skips the optional MFA screen). Logs in, looks around, tries to capture the current bill.
+// Enbridge Gas bill retriever, test version 3 (skips MFA, closes popups). Logs in, looks around, tries to capture the current bill.
 // Sends nothing, changes nothing. Prints a short masked report. Secrets come from env vars
 // ENBRIDGE_USER_1 / ENBRIDGE_PASS_1, then _2, _3.
 const { publish } = require('./reporter');
@@ -65,16 +65,37 @@ async function runLogin(browser, n, user, pass) {
     if (remember && (await remember.isChecked())) await remember.uncheck().catch(() => {});
     await page.click('#okta-signin-submit');
     await page.waitForTimeout(20000);
-    // Enbridge offers an OPTIONAL "enable multi-factor authentication" screen. Never enable it: skip it.
-    for (let tries = 0; tries < 3; tries++) {
-      const skip = page.getByRole('button', { name: /skip mfa/i }).first();
-      const skipAny = (await skip.count()) ? skip : page.getByText(/skip mfa/i).first();
-      if (await skipAny.count()) {
-        log('Optional MFA screen shown: clicking Skip MFA');
-        await skipAny.click({ timeout: 8000 }).catch((e) => log('skip click failed:', mask(e.message).slice(0, 80)));
-        await page.waitForTimeout(15000);
-      } else break;
+    // Close optional screens and popups (never enable MFA): click only buttons that are actually visible.
+    const dismiss = [
+      { name: 'Skip MFA', loc: () => page.getByRole('button', { name: /skip mfa/i }) },
+      { name: "Don't show again", loc: () => page.getByText(/don'?t show again/i) },
+      { name: 'Ok', loc: () => page.getByRole('button', { name: /^(ok|close|got it|no thanks|maybe later)$/i }) },
+    ];
+    for (let round = 0; round < 8; round++) {
+      let clickedSomething = false;
+      for (const d of dismiss) {
+        const all = d.loc();
+        const n = await all.count().catch(() => 0);
+        for (let i = 0; i < n; i++) {
+          const el = all.nth(i);
+          if (await el.isVisible().catch(() => false)) {
+            log('Popup/optional screen: clicking', d.name);
+            await el.click({ timeout: 5000 }).catch(() => {});
+            clickedSomething = true;
+            await page.waitForTimeout(4000);
+            break;
+          }
+        }
+      }
+      const loading = /OktaLoading/.test(page.url());
+      if (!clickedSomething && !loading) break;
+      await page.waitForTimeout(8000);
     }
+    await page.waitForURL((u) => !/OktaLoading/.test(String(u)), { timeout: 45000 }).catch(() => log('Still on the loading page after waiting'));
+    await page.waitForTimeout(8000);
+    const vis = await page.$$eval('button, a[role=button], [role=button]', (els) => els
+      .filter((e) => e.offsetParent !== null).map((e) => (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ')).filter((t) => t && t.length < 40));
+    log('Visible buttons:', mask([...new Set(vis)].slice(0, 20).join(' ;; ')));
     log('URL after login:', mask(page.url()).split('?')[0].slice(0, 110));
     log('Title:', mask(await page.title()));
     const lower = (await page.innerText('body').catch(() => '')).toLowerCase();
