@@ -1,6 +1,7 @@
 // Enbridge Gas bill retriever, test version 1. Logs in, looks around, tries to capture the current bill.
 // Sends nothing, changes nothing. Prints a short masked report. Secrets come from env vars
 // ENBRIDGE_USER_1 / ENBRIDGE_PASS_1, then _2, _3.
+const { publish } = require('./reporter');
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -116,4 +117,4 @@ async function main() {
   for (const l of logins) await runLogin(browser, l.n, l.u, l.p);
   await browser.close();
 }
-main().finally(() => { log('REPORT END'); setInterval(() => {}, 1 << 30); });
+main().finally(async () => { log('REPORT END'); await publish('enbridge'); setInterval(() => {}, 1 << 30); });

@@ -1,6 +1,7 @@
 // Hydro One bill retriever, test version 6 (several logins, all accounts, last N bills each).
 // Downloads bill PDFs into DATA_DIR/hydroone/<account last 4>/<bill date>_<amount>.pdf and prints a masked table.
 // Sends nothing, changes nothing. Secrets come from env vars HYDROONE_USER_n / HYDROONE_PASS_n.
+const { publish } = require('./reporter');
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -163,4 +164,4 @@ async function main() {
   for (const l of logins) await runLogin(browser, l.n, l.u, l.p);
   await browser.close();
 }
-main().finally(() => { log('REPORT END'); setInterval(() => {}, 1 << 30); });
+main().finally(async () => { log('REPORT END'); await publish('hydroone'); setInterval(() => {}, 1 << 30); });
