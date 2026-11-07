@@ -1,4 +1,4 @@
-// Enbridge Gas bill retriever, test version 3 (skips MFA, closes popups). Logs in, looks around, tries to capture the current bill.
+// Enbridge Gas bill retriever, test version 4 (finds Skip MFA / popups by text). Logs in, looks around, tries to capture the current bill.
 // Sends nothing, changes nothing. Prints a short masked report. Secrets come from env vars
 // ENBRIDGE_USER_1 / ENBRIDGE_PASS_1, then _2, _3.
 const { publish } = require('./reporter');
@@ -65,31 +65,29 @@ async function runLogin(browser, n, user, pass) {
     if (remember && (await remember.isChecked())) await remember.uncheck().catch(() => {});
     await page.click('#okta-signin-submit');
     await page.waitForTimeout(20000);
-    // Close optional screens and popups (never enable MFA): click only buttons that are actually visible.
-    const dismiss = [
-      { name: 'Skip MFA', loc: () => page.getByRole('button', { name: /skip mfa/i }) },
-      { name: "Don't show again", loc: () => page.getByText(/don'?t show again/i) },
-      { name: 'Ok', loc: () => page.getByRole('button', { name: /^(ok|close|got it|no thanks|maybe later)$/i }) },
-    ];
-    for (let round = 0; round < 8; round++) {
-      let clickedSomething = false;
-      for (const d of dismiss) {
-        const all = d.loc();
-        const n = await all.count().catch(() => 0);
-        for (let i = 0; i < n; i++) {
-          const el = all.nth(i);
-          if (await el.isVisible().catch(() => false)) {
-            log('Popup/optional screen: clicking', d.name);
-            await el.click({ timeout: 5000 }).catch(() => {});
-            clickedSomething = true;
-            await page.waitForTimeout(4000);
-            break;
+    // Close optional screens and popups (never enable MFA): click VISIBLE elements by their exact text.
+    const WANT = ['skip mfa', "don't show again", 'ok', 'close', 'no thanks', 'maybe later', 'got it'];
+    for (let round = 0; round < 10; round++) {
+      let clicked = '';
+      for (const f of page.frames()) {
+        const res = await f.evaluate((want) => {
+          const els = [...document.querySelectorAll('button, a, div, span, p, [role=button], input[type=button]')];
+          for (const w of want) {
+            const hit = els.find((e) => {
+              const t = ((e.innerText || e.value || '') + '').trim().toLowerCase().replace(/\s+/g, ' ');
+              return t === w && e.getClientRects().length > 0;
+            });
+            if (hit) { hit.click(); return w; }
           }
-        }
+          return '';
+        }, WANT).catch(() => '');
+        if (res) { clicked = res; break; }
       }
+      if (clicked) log('Popup/optional screen: clicked "' + clicked + '"');
       const loading = /OktaLoading/.test(page.url());
-      if (!clickedSomething && !loading) break;
-      await page.waitForTimeout(8000);
+      await page.waitForTimeout(clicked ? 5000 : 8000);
+      if (!clicked && !loading) break;
+      if (!clicked && round >= 4) break;
     }
     await page.waitForURL((u) => !/OktaLoading/.test(String(u)), { timeout: 45000 }).catch(() => log('Still on the loading page after waiting'));
     await page.waitForTimeout(8000);
