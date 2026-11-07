@@ -1,4 +1,4 @@
-// Enbridge Gas bill retriever, test version 4 (finds Skip MFA / popups by text). Logs in, looks around, tries to capture the current bill.
+// Enbridge Gas bill retriever, test version 5 (accounts list, ViewBill API, activity page). Logs in, looks around, tries to capture the current bill.
 // Sends nothing, changes nothing. Prints a short masked report. Secrets come from env vars
 // ENBRIDGE_USER_1 / ENBRIDGE_PASS_1, then _2, _3.
 const { publish } = require('./reporter');
@@ -100,30 +100,41 @@ async function runLogin(browser, n, user, pass) {
     log('Asks for a code (2-step):', /verification code|security code|one-time|passcode|enter the code|text message|sms|verify it's you/.test(lower));
     log('Error words seen:', /incorrect|invalid|locked|try again|unable to sign/.test(lower));
     log('PAGE:', await bodyTail('', 900));
-    const items = await page.$$eval('a, button', (els) => els
-      .map((e) => (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ') + ' -> ' + (e.getAttribute('href') || '').split('?')[0])
-      .filter((x) => /bill|statement|account|history|usage|pdf|download|view/i.test(x)));
-    log('BILL-RELATED LINKS:', mask([...new Set(items)].slice(0, 25).join(' ;; ')).slice(0, 1100));
+    const T = async () => (await page.innerText('body').catch(() => ''));
+    const svc = (t) => { const m = t.match(/Service Address:\s*(.+?)\s+Account Number:\s*(\d+)/); return m ? mask(m[1]).slice(0, 50) + ' (acct ..' + m[2].slice(-4) + ')' : 'not found'; };
+    log('First account shown:', svc(await T()));
 
-    // try to open the bill
-    const target = page.locator('a, button').filter({ hasText: /view (my |current |latest )?bill|current bill|bill history|view bill|billing/i }).first();
-    if (await target.count()) {
-      await target.click({ timeout: 10000 }).catch((e) => log('click failed:', mask(e.message).slice(0, 90)));
-      await page.waitForTimeout(15000);
-      log('After clicking bill link, URL:', mask(page.url()).split('?')[0].slice(0, 110));
-      log('PAGE 2:', await bodyTail('', 900));
-      const items2 = await page.$$eval('a, button', (els) => els
-        .map((e) => (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ') + ' -> ' + (e.getAttribute('href') || '').split('?')[0])
-        .filter((x) => /view|download|pdf|bill|statement/i.test(x)));
-      log('LINKS 2:', mask([...new Set(items2)].slice(0, 20).join(' ;; ')).slice(0, 900));
-    } else {
-      log('No bill link matched on the first page.');
-    }
-    log('PDFs captured:', captured.length);
-    for (const c of captured) {
-      log('  PDF', c.size + ' bytes', c.url);
-      if (headPrinted < 2) { headPrinted++; log('  PDF TOP LINES:', JSON.stringify(pdfLines(c.file, 40))); }
-    }
+    // 1) list every account offered by the address drop-down
+    const opts = await page.$$eval('select option', (els) => els.map((e) => (e.textContent || '').trim().replace(/\s+/g, ' ')).filter(Boolean));
+    log('Drop-down options (select):', mask(opts.join(' ;; ')).slice(0, 700) || 'none');
+    const items = await page.$$eval('[role=option], [role=listbox] li, .dropdown-menu li, .dropdown-menu a, ul[class*=account] li, [class*=account-list] li', (els) => els
+      .map((e) => (e.innerText || '').trim().replace(/\s+/g, ' ')).filter((t) => /\d/.test(t) && t.length < 90));
+    log('Account list items:', mask([...new Set(items)].slice(0, 20).join(' ;; ')).slice(0, 900) || 'none');
+
+    // 2) try the bill download link directly with the logged-in session
+    try {
+      const r = await page.request.get('https://myaccount.enbridgegas.com/api/MyBillInfo/ViewBill', { timeout: 40000 });
+      const ct = (r.headers()['content-type'] || '').toLowerCase();
+      const buf = await r.body();
+      log('ViewBill API: HTTP', r.status(), '| type', ct.slice(0, 40), '|', buf.length, 'bytes');
+      if (ct.includes('pdf') && buf.length > 1000) {
+        fs.mkdirSync(path.join(OUT, 'enbridge'), { recursive: true });
+        const f = path.join(OUT, 'enbridge', 'login' + n + '-current.pdf');
+        fs.writeFileSync(f, buf);
+        log('  BILL TOP LINES:', JSON.stringify(pdfLines(f, 45)));
+      } else {
+        log('  body start:', mask(buf.toString('utf8').slice(0, 300)));
+      }
+    } catch (e) { log('ViewBill API error:', mask(e.message).slice(0, 120)); }
+
+    // 3) the account activity page (payment and bill history)
+    try {
+      await page.goto('https://myaccount.enbridgegas.com/My-Account/Account-Activity', { waitUntil: 'load', timeout: 60000 });
+      await page.waitForTimeout(12000);
+      const t = await T();
+      const i = t.indexOf('Service Address');
+      log('ACCOUNT ACTIVITY:', mask(t.slice(i < 0 ? 0 : i, (i < 0 ? 0 : i) + 1300)));
+    } catch (e) { log('Activity page error:', mask(e.message).slice(0, 100)); }
   } catch (e) {
     log('ERROR:', mask(e.message).slice(0, 300));
   }
