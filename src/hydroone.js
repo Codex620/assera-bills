@@ -1,12 +1,14 @@
-// Hydro One bill retriever, test version 5 (several logins, past bills).
-// Logs in once, visits every account, captures the current-bill PDF and probes "past bills".
-// Sends nothing, changes nothing. Prints a short, masked report. Secrets come from env vars.
+// Hydro One bill retriever, test version 6 (several logins, all accounts, last N bills each).
+// Downloads bill PDFs into DATA_DIR/hydroone/<account last 4>/<bill date>_<amount>.pdf and prints a masked table.
+// Sends nothing, changes nothing. Secrets come from env vars HYDROONE_USER_n / HYDROONE_PASS_n.
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
 const OUT = process.env.DATA_DIR || '/data';
+const ACCOUNT_LIMIT = parseInt(process.env.ACCOUNT_LIMIT || '4', 10);
+const BILL_LIMIT = parseInt(process.env.BILL_LIMIT || '3', 10);
 const PICKER = 'https://www.hydroone.com/myaccount/select-account/?returnUrl=/myaccount';
 
 const mask = (s) => String(s || '')
@@ -17,62 +19,54 @@ const mask = (s) => String(s || '')
 const log = (...a) => console.log(...a);
 const sleep = (page, ms) => page.waitForTimeout(ms);
 
-function pdfSummary(file) {
+function parseBill(file) {
   try {
     const txt = execFileSync('pdftotext', ['-layout', file, '-'], { encoding: 'utf8', timeout: 30000 });
     const lines = txt.split('\n').map((l) => l.trim()).filter(Boolean);
-    const keep = lines.filter((l) =>
-      /(service address|account (number|no)|bill (date|number)|billing period|bill period|amount due|total (amount|due|bill)|due date|invoice|statement date|previous bill|current charges)/i.test(l));
-    return { pages: (txt.match(/\f/g) || []).length, lineCount: lines.length, keep: keep.slice(0, 14).map((l) => mask(l).slice(0, 110)) };
-  } catch (e) {
-    return { error: mask(e.message).slice(0, 120) };
-  }
+    const grab = (re) => { const m = txt.match(re); return m ? m[1].trim() : ''; };
+    const postal = [];
+    lines.forEach((l, i) => { if (/\b[A-Z]\d[A-Z] ?\d[A-Z]\d\b/.test(l)) postal.push(((lines[i - 1] || '') + ' / ' + l).slice(0, 110)); });
+    const svc = lines.filter((l) => /service (address|location)|supply address|location of service/i.test(l)).slice(0, 2);
+    return {
+      issued: grab(/statement is issued on:\s*([A-Za-z]+ \d{1,2}, \d{4})/i),
+      period: grab(/for the period of:\s*([^\n]+)/i),
+      account: mask(grab(/account number is:\s*([\d ]+)/i)),
+      owner: lines.find((l) => /INC\.|LTD|CORP/i.test(l)) || '',
+      addressLines: postal.slice(0, 3).map(mask),
+      serviceLabelLines: svc.map(mask),
+    };
+  } catch (e) { return { error: mask(e.message).slice(0, 100) }; }
 }
-
-function pdfHead(file) {
-  try {
-    const txt = execFileSync('pdftotext', ['-layout', file, '-'], { encoding: 'utf8', timeout: 30000 });
-    return txt.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 45).map((l) => mask(l).slice(0, 100));
-  } catch (e) { return ['pdf read error']; }
-}
-let headPrinted = 0;
 
 async function runLogin(browser, n, user, pass) {
   log('=== LOGIN', n, '===');
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
   const page = await context.newPage();
-
-  // Capture every PDF the site hands us, whether by download, popup or inline response.
   const captured = [];
   context.on('response', async (resp) => {
     try {
       const ct = (resp.headers()['content-type'] || '').toLowerCase();
       if (ct.includes('pdf') && resp.status() === 200) {
         const body = await resp.body();
-        const file = path.join(OUT, 'capture-' + Date.now() + '-' + captured.length + '.pdf');
+        const file = path.join(OUT, 'tmp-' + Date.now() + '-' + captured.length + '.pdf');
         fs.writeFileSync(file, body);
-        captured.push({ file, size: body.length, url: mask(resp.url()).split('?')[0].slice(0, 90) });
+        captured.push({ file, size: body.length });
       }
     } catch (e) {}
   });
   page.on('download', async (d) => {
     try {
-      const file = path.join(OUT, 'download-' + Date.now() + '.pdf');
+      const file = path.join(OUT, 'tmp-dl-' + Date.now() + '.pdf');
       await d.saveAs(file);
-      captured.push({ file, size: fs.statSync(file).size, url: 'download:' + mask(d.suggestedFilename()) });
-    } catch (e) { log('download save failed:', mask(e.message).slice(0, 80)); }
+      captured.push({ file, size: fs.statSync(file).size });
+    } catch (e) {}
   });
 
   try {
     let opened = false;
     for (let i = 1; i <= 5 && !opened; i++) {
-      try {
-        await page.goto('https://www.hydroone.com/myaccount', { waitUntil: 'load', timeout: 60000 });
-        opened = true;
-      } catch (e) {
-        log('Open attempt', i, 'failed:', mask(e.message).slice(0, 60));
-        await sleep(page, 10000);
-      }
+      try { await page.goto('https://www.hydroone.com/myaccount', { waitUntil: 'load', timeout: 60000 }); opened = true; }
+      catch (e) { log('Open attempt', i, 'failed:', mask(e.message).slice(0, 60)); await sleep(page, 10000); }
     }
     if (!opened) throw new Error('Could not open Hydro One after 5 tries');
     await page.waitForSelector('input[type=password]', { timeout: 30000 });
@@ -86,83 +80,63 @@ async function runLogin(browser, n, user, pass) {
     const pickerText = await page.innerText('body').catch(() => '');
     const accounts = [...pickerText.matchAll(/Account\s+(\d{5,})[\s\S]{0,80}?Addresses\s+([^\n]+?)\s+(?:[A-Z][a-z]+\s+ON|Balance)/g)]
       .map((m) => ({ last4: m[1].slice(-4), addr: mask(m[2]).slice(0, 60) }));
-    log('ACCOUNTS FOUND:', accounts.length ? accounts.map((a) => '..' + a.last4 + ' ' + a.addr).join(' | ') : 'none parsed');
+    log('ACCOUNTS:', accounts.map((a) => '..' + a.last4 + ' ' + a.addr).join(' | ') || 'none parsed');
     const count = await page.getByRole('button', { name: 'SELECT', exact: true }).count();
-    log('SELECT buttons:', count);
 
-    for (let idx = 0; idx < Math.min(count, parseInt(process.env.ACCOUNT_LIMIT || '1', 10)); idx++) {
-      log('--- ACCOUNT', idx + 1, accounts[idx] ? '(..' + accounts[idx].last4 + ')' : '', '---');
-      captured.length = 0;
+    for (let idx = 0; idx < Math.min(count, ACCOUNT_LIMIT); idx++) {
+      const a = accounts[idx] || { last4: 'acct' + (idx + 1), addr: '' };
+      log('--- ACCOUNT ..' + a.last4, a.addr, '---');
       try {
-        if (idx > 0) { await page.goto(PICKER, { waitUntil: 'load', timeout: 60000 }); await sleep(page, 10000); }
-        await page.getByRole('button', { name: 'SELECT', exact: true }).nth(idx).click({ timeout: 15000 });
-        await sleep(page, 10000);
-
-        // 1) current bill
-        try {
-          await page.getByText('View current bill').first().click({ timeout: 10000 });
-          await sleep(page, 15000);
-        } catch (e) { log('current bill click failed:', mask(e.message).slice(0, 80)); }
-        log('After current bill: pdfs captured =', captured.length, '| pages open =', context.pages().length);
-        for (const c of captured) {
-          log('  PDF', path.basename(c.file), c.size + ' bytes', c.url);
-          log('  SUMMARY', JSON.stringify(pdfSummary(c.file)));
-          if (headPrinted < 2) { headPrinted++; log('  CURRENT BILL TOP LINES:', JSON.stringify(pdfHead(c.file))); }
-        }
-        if (!captured.length) {
-          const t = await page.innerText('body').catch(() => '');
-          log('  No PDF. Page text after click:', mask(t.slice(t.indexOf('Logout') + 6)).slice(0, 500));
-        }
-
-        // 2) past bills page
-        captured.length = 0;
         await page.goto(PICKER, { waitUntil: 'load', timeout: 60000 }); await sleep(page, 8000);
         await page.getByRole('button', { name: 'SELECT', exact: true }).nth(idx).click({ timeout: 15000 });
         await sleep(page, 8000);
         await page.getByText('View past bills').first().click({ timeout: 10000 });
-        await sleep(page, 12000);
-        const t2 = await page.innerText('body').catch(() => '');
-        const i2 = t2.indexOf('Logout');
-        log('  PAST BILLS PAGE:', mask(t2.slice(i2 < 0 ? 0 : i2 + 6)).slice(0, 900));
-        const items = await page.$$eval('a, button', (els) => els
-          .map((e) => (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ') + ' -> ' + (e.getAttribute('href') || '').split('?')[0])
-          .filter((x) => /view|download|pdf|bill/i.test(x)));
-        log('  PAST BILLS ITEMS:', mask([...new Set(items)].slice(0, 14).join(' ;; ')).slice(0, 700));
+        await sleep(page, 10000);
+        try { await page.getByText(/Show \d+ more months/).first().click({ timeout: 5000 }); await sleep(page, 3000); } catch (e) {}
 
-        // show older months, then list every billed / payment row
-        try { await page.getByText(/Show \d+ more months/).first().click({ timeout: 6000 }); await sleep(page, 4000); } catch (e) {}
-        const hist = await page.innerText('body').catch(() => '');
-        const rowsTxt = [...hist.matchAll(/([A-Z][a-z]{2} \d{1,2}, \d{4})\s+(Billed amount|Payment received for)\s+\$([\d,]+\.\d{2})/g)]
-          .map((m) => m[1] + ' ' + (m[2].startsWith('Billed') ? 'BILLED' : 'PAID') + ' ' + m[3]);
-        log('  HISTORY ROWS (' + rowsTxt.length + '):', rowsTxt.join(' | '));
+        const body = await page.innerText('body').catch(() => '');
+        const rows = [...body.matchAll(/([A-Z][a-z]{2} \d{1,2}, \d{4})\s+Billed amount\s+\$([\d,]+\.\d{2})/g)]
+          .map((m) => ({ date: m[1], amount: m[2].replace(',', '') }))
+          .filter((r, i, arr) => i === 0 || r.date !== arr[i - 1].date || r.amount !== arr[i - 1].amount);
+        const toggles = await page.evaluate(() => {
+          const out = [];
+          document.querySelectorAll('[href^="#billingDetails"]').forEach((e) => { const h = e.getAttribute('href'); if (!out.includes(h)) out.push(h); });
+          return out;
+        });
+        log('  billed rows:', rows.length, '| toggles:', toggles.length);
 
-        // expand the newest past bill and look for a PDF link inside
-        captured.length = 0;
-        try {
-          const clicked = await page.evaluate(() => {
-            const el = document.querySelector('[href="#billingDetails0"], [data-target="#billingDetails0"], [data-bs-target="#billingDetails0"]');
-            if (!el) return 'no toggle element found';
-            el.click();
-            return 'clicked ' + el.tagName;
-          });
-          log('  expand toggle:', clicked);
-          await sleep(page, 3000);
-          const det = await page.evaluate(() => (document.querySelector('#billingDetails0') || {}).textContent || 'no #billingDetails0 element');
-          log('  EXPANDED BILL DETAILS:', mask(det).slice(0, 600));
-          const inner = await page.$$eval('#billingDetails0 a, #billingDetails0 button, #billingDetails0 [onclick]', (els) => els
-            .map((e) => (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ') + ' -> ' + (e.getAttribute('href') || '').split('?')[0]));
-          log('  LINKS INSIDE EXPANDED BILL:', mask(inner.join(' ;; ')).slice(0, 400) || 'NONE');
-          const target = page.locator('#billingDetails0 a, #billingDetails0 button').filter({ hasText: /view|download|pdf|bill/i }).first();
-          if (await target.count()) {
-            await target.click({ timeout: 8000, force: true }).catch((e) => log('  click failed:', mask(e.message).slice(0, 80)));
-            await sleep(page, 14000);
-            log('  PDFs captured from past bill:', captured.length);
-            for (const c of captured) {
-              log('  PAST PDF', c.size + ' bytes', 'summary', JSON.stringify(pdfSummary(c.file)));
-              if (headPrinted < 2) { headPrinted++; log('  PDF TOP LINES:', JSON.stringify(pdfHead(c.file))); }
+        for (let k = 0; k < Math.min(BILL_LIMIT, rows.length, toggles.length); k++) {
+          captured.length = 0;
+          const row = rows[k];
+          const id = toggles[k].slice(1);
+          let status = '';
+          try {
+            await page.evaluate((h) => { const el = document.querySelector('[href="' + h + '"]'); if (el) el.click(); }, toggles[k]);
+            await sleep(page, 2500);
+            for (const label of [/download bill/i, /view bill/i]) {
+              if (captured.length) break;
+              const link = page.locator('#' + id + ' a, #' + id + ' button').filter({ hasText: label }).first();
+              if (await link.count()) {
+                await link.click({ timeout: 8000, force: true }).catch(() => {});
+                for (let w = 0; w < 12 && !captured.length; w++) await sleep(page, 1000);
+              }
             }
-          }
-        } catch (e) { log('  expand step note:', mask(e.message).slice(0, 120)); }
+            if (!captured.length) { status = 'NO PDF CAPTURED'; }
+            else {
+              const c = captured[0];
+              const [mon, day, year] = row.date.replace(',', '').split(' ');
+              const mm = String(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].indexOf(mon) + 1).padStart(2, '0');
+              const dir = path.join(OUT, 'hydroone', a.last4);
+              fs.mkdirSync(dir, { recursive: true });
+              const dest = path.join(dir, year + '-' + mm + '-' + String(day).padStart(2, '0') + '_' + row.amount + '.pdf');
+              fs.copyFileSync(c.file, dest);
+              status = 'saved ' + path.relative(OUT, dest) + ' ' + c.size + 'b ' + JSON.stringify(parseBill(dest));
+            }
+          } catch (e) { status = 'ERROR ' + mask(e.message).slice(0, 100); }
+          log('  BILL', k + 1, row.date, '$' + row.amount, '=>', status);
+          for (const c of captured) { try { fs.unlinkSync(c.file); } catch (e) {} }
+          captured.length = 0;
+        }
       } catch (e) {
         log('  Account ERROR:', mask(e.message).slice(0, 200));
       }
@@ -182,15 +156,11 @@ async function main() {
     if (u && p) logins.push({ n, u, p });
   }
   if (!logins.length) { log('No HYDROONE_USER_1 / HYDROONE_PASS_1 found in Coolify settings.'); return; }
-  log('Logins configured:', logins.length);
+  log('Logins configured:', logins.length, '| accounts per login:', ACCOUNT_LIMIT, '| bills per account:', BILL_LIMIT);
   try { fs.mkdirSync(OUT, { recursive: true }); } catch (e) {}
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
-  await new Promise((r) => setTimeout(r, 20000)); // let the server network settle after start
+  await new Promise((r) => setTimeout(r, 20000));
   for (const l of logins) await runLogin(browser, l.n, l.u, l.p);
   await browser.close();
 }
-
-main().finally(() => {
-  log('REPORT END');
-  setInterval(() => {}, 1 << 30); // keep container alive so Coolify does not restart it
-});
+main().finally(() => { log('REPORT END'); setInterval(() => {}, 1 << 30); });
