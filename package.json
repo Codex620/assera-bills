@@ -3,6 +3,11 @@
   "version": "0.2.0",
   "private": true,
   "description": "Retrieves utility bills for Assera. No secrets live in this repository.",
-  "scripts": { "start": "node src/hydroone.js" },
-  "dependencies": { "playwright": "1.49.0" }
+  "scripts": {
+    "start": "node src/hydroone.js"
+  },
+  "dependencies": {
+    "playwright": "1.49.0",
+    "nodemailer": "6.9.16"
+  }
 }

@@ -164,6 +164,10 @@ async function main() {
     const p = process.env['HYDROONE_PASS_' + n];
     if (u && p) logins.push({ n, u, p });
   }
+  if (process.env.SEND_ONLY === 'true') {
+    try { await require('./sender').run(log); } catch (e) { log('Sender error:', mask(e.message).slice(0, 160)); }
+    return;
+  }
   if (!logins.length) { log('No HYDROONE_USER_1 / HYDROONE_PASS_1 found in Coolify settings.'); return; }
   log('Logins configured:', logins.length, '| accounts per login:', ACCOUNT_LIMIT, '| bills per account:', BILL_LIMIT);
   try { fs.mkdirSync(OUT, { recursive: true }); } catch (e) {}
@@ -171,5 +175,6 @@ async function main() {
   await new Promise((r) => setTimeout(r, 20000));
   for (const l of logins) await runLogin(browser, l.n, l.u, l.p);
   await browser.close();
+  try { await require('./sender').run(log); } catch (e) { log('Sender error:', mask(e.message).slice(0, 160)); }
 }
 main().finally(async () => { log('REPORT END'); await publish('hydroone'); setInterval(() => {}, 1 << 30); });
