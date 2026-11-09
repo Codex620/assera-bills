@@ -214,7 +214,8 @@ async function runLogin(browser, n, user, pass) {
           const f = path.join(OUT, 'enbridge', 'acct' + t + '.pdf');
           fs.mkdirSync(path.join(OUT, 'enbridge'), { recursive: true });
           fs.writeFileSync(f, bill.buf);
-          log('  BILL PDF', bill.size, 'bytes | top lines:', JSON.stringify(pdfLines(f, 40)));
+          log('  BILL PDF', bill.size, 'bytes | top lines:', JSON.stringify(pdfLines(f, 14)));
+          log('  repo upload:', await uploadBinary('enbridge-pdfs/' + t + '/latest_' + new Date().toISOString().slice(0, 10) + '.pdf', bill.buf));
         } else log('  no bill PDF seen for ..' + t);
       } catch (e) { log('ACCOUNT ..' + t + ' error:', mask(e.message).slice(0, 120)); }
     }
