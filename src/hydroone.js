@@ -102,6 +102,14 @@ async function runLogin(browser, n, user, pass) {
         await sleep(page, 10000);
         try { await page.getByText(/Show \d+ more months/).first().click({ timeout: 5000 }); await sleep(page, 3000); } catch (e) {}
 
+        for (let t = 1; t <= 2; t++) {
+          const probe = await page.innerText('body').catch(() => '');
+          if (/Billed amount/.test(probe)) break;
+          log('  bill list empty, reloading (try', t + ')');
+          await page.reload({ waitUntil: 'load', timeout: 60000 }).catch(() => {});
+          await sleep(page, 10000);
+          try { await page.getByText('View past bills').first().click({ timeout: 10000 }); await sleep(page, 10000); } catch (e) {}
+        }
         const body = await page.innerText('body').catch(() => '');
         const rows = [...body.matchAll(/([A-Z][a-z]{2} \d{1,2}, \d{4})\s+Billed amount\s+\$([\d,]+\.\d{2})/g)]
           .map((m) => ({ date: m[1], amount: m[2].replace(',', '') }))
@@ -128,14 +136,17 @@ async function runLogin(browser, n, user, pass) {
           const id = toggles[k].slice(1);
           let status = '';
           try {
-            await page.evaluate((h) => { const el = document.querySelector('[href="' + h + '"]'); if (el) el.click(); }, toggles[k]);
-            await sleep(page, 2500);
-            for (const label of [/download bill/i, /view bill/i]) {
-              if (captured.length) break;
-              const link = page.locator('#' + id + ' a, #' + id + ' button').filter({ hasText: label }).first();
-              if (await link.count()) {
-                await link.click({ timeout: 8000, force: true }).catch(() => {});
-                for (let w = 0; w < 12 && !captured.length; w++) await sleep(page, 1000);
+            for (let attempt = 1; attempt <= 3 && !captured.length; attempt++) {
+              if (attempt > 1) log('    retry', attempt, 'for', row.date);
+              await page.evaluate((h) => { const el = document.querySelector('[href="' + h + '"]'); if (el) el.click(); }, toggles[k]);
+              await sleep(page, 2500 * attempt);
+              for (const label of [/download bill/i, /view bill/i]) {
+                if (captured.length) break;
+                const link = page.locator('#' + id + ' a, #' + id + ' button').filter({ hasText: label }).first();
+                if (await link.count()) {
+                  await link.click({ timeout: 8000, force: true }).catch(() => {});
+                  for (let w = 0; w < 12 + 8 * attempt && !captured.length; w++) await sleep(page, 1000);
+                }
               }
             }
             if (!captured.length && process.env.DEBUG_BILLS === 'true') {
