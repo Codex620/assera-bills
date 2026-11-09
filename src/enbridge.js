@@ -216,6 +216,19 @@ async function runLogin(browser, n, user, pass) {
           fs.writeFileSync(f, bill.buf);
           log('  BILL PDF', bill.size, 'bytes | top lines:', JSON.stringify(pdfLines(f, 14)));
           log('  repo upload:', await uploadBinary('enbridge-pdfs/' + t + '/latest_' + new Date().toISOString().slice(0, 10) + '.pdf', bill.buf));
+          try {
+            const raw = execFileSync('pdftotext', ['-raw', f, '-'], { encoding: 'utf8', timeout: 30000 });
+            const bd = (raw.match(/Account Number Bill Date[\s\S]{0,400}?([A-Z][a-z]{2} \d{1,2}, \d{4})/) || raw.match(/Bill Date[\s\S]{0,120}?([A-Z][a-z]{2} \d{1,2}, \d{4})/) || [])[1];
+            const bp = raw.match(/Billing Period\s+([A-Z][a-z]{2} \d{1,2}, \d{4})\s*-\s*([A-Z][a-z]{2} \d{1,2}, \d{4})/);
+            const tot = (raw.match(/Total Amount\s*\$?\s*([\d,]+\.\d{2})/) || [])[1];
+            const props = JSON.parse(process.env.ENBRIDGE_PROPERTY_MAP || '{"8570":"430 Phoenix Cres","6653":"389 Hepatica Way"}');
+            log('  parsed bill: date', bd || 'n/a', '| period', bp ? bp[1] + ' - ' + bp[2] : 'n/a', '| total', tot || 'n/a');
+            if (props[t] && bd && bp && tot) {
+              const file2 = 'enbridge-pdfs/' + t + '/' + new Date(bd).toISOString().slice(0, 10) + '_' + tot.replace(',', '') + '.pdf';
+              await uploadBinary(file2, bill.buf);
+              await require('./autoqueue').addIfNew(log, { source: 'enbridge', acct: t, amount: tot.replace(',', ''), issued: bd, periodFrom: bp[1], periodTo: bp[2], property: props[t], note: '', pdfPath: file2, pdf: bill.buf });
+            }
+          } catch (e) { log('  autoqueue skipped:', mask(e.message).slice(0, 100)); }
         } else log('  no bill PDF seen for ..' + t);
       } catch (e) { log('ACCOUNT ..' + t + ' error:', mask(e.message).slice(0, 120)); }
     }

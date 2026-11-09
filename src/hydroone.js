@@ -167,7 +167,15 @@ async function runLogin(browser, n, user, pass) {
               const dest = path.join(dir, year + '-' + mm + '-' + String(day).padStart(2, '0') + '_' + row.amount + '.pdf');
               fs.copyFileSync(c.file, dest);
               const up = await uploadBinary('hydroone-pdfs/' + a.last4 + '/' + path.basename(dest), fs.readFileSync(dest));
-              status = 'repo upload: ' + up + ' | saved ' + path.relative(OUT, dest) + ' ' + c.size + 'b ' + JSON.stringify(parseBill(dest));
+              const info = parseBill(dest);
+              status = 'repo upload: ' + up + ' | saved ' + path.relative(OUT, dest) + ' ' + c.size + 'b ' + JSON.stringify(info);
+              try {
+                const props = JSON.parse(process.env.PROPERTY_MAP || '{"6653":"430A Phoenix Cres","6225":"430B Phoenix Cres","3684":"389 Hepatica Way","1142":"717B Powers St"}');
+                const pm = String(info.period || '').split(/\s+-\s+/);
+                if (props[a.last4] && pm.length === 2) {
+                  await require('./autoqueue').addIfNew(log, { source: 'hydroone', acct: a.last4, amount: row.amount, issued: info.issued, periodFrom: pm[0], periodTo: pm[1], property: props[a.last4], note: 'Hydro One statement', pdfPath: 'hydroone-pdfs/' + a.last4 + '/' + path.basename(dest), pdf: fs.readFileSync(dest) });
+                }
+              } catch (e) { log('  autoqueue skipped:', mask(e.message).slice(0, 80)); }
             }
           } catch (e) { status = 'ERROR ' + mask(e.message).slice(0, 100); }
           log('  BILL', k + 1, row.date, '$' + row.amount, '=>', status);

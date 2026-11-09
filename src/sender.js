@@ -58,4 +58,4 @@ async function run(log) {
     }
   }
 }
-module.exports = { run };
+module.exports = { run, getJson, putJson };
