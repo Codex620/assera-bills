@@ -1,7 +1,7 @@
 // Enbridge Gas bill retriever, test version 5 (accounts list, ViewBill API, activity page). Logs in, looks around, tries to capture the current bill.
 // Sends nothing, changes nothing. Prints a short masked report. Secrets come from env vars
 // ENBRIDGE_USER_1 / ENBRIDGE_PASS_1, then _2, _3.
-const { publish } = require('./reporter');
+const { publish, uploadBinary } = require('./reporter');
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -126,6 +126,33 @@ async function runLogin(browser, n, user, pass) {
         log('  body start:', mask(buf.toString('utf8').slice(0, 300)));
       }
     } catch (e) { log('ViewBill API error:', mask(e.message).slice(0, 120)); }
+
+    // 2b) v6: look for the account switcher near "Service Address" and print the ViewBill page to a PDF
+    try {
+      await page.goto('https://myaccount.enbridgegas.com/my-account/my-bill', { waitUntil: 'load', timeout: 60000 });
+      await page.waitForTimeout(8000);
+      const sw = await page.evaluate(() => {
+        const out = [];
+        document.querySelectorAll('select, [role=combobox], [aria-haspopup], [class*=ddl], [class*=select], [class*=dropdown], [id*=ddl], [id*=Account], [id*=account]').forEach((e) => {
+          out.push(e.tagName + '#' + (e.id || '') + '.' + String(e.className || '').slice(0, 40) + ' [' + (e.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 70) + ']' + (e.tagName === 'SELECT' ? ' opts=' + [...e.options].map((o) => o.text.trim()).join('|').slice(0, 200) : ''));
+        });
+        return [...new Set(out)].slice(0, 25);
+      });
+      log('SWITCHER CANDIDATES:', sw.map(mask).join(' ;; ').slice(0, 1800));
+    } catch (e) { log('Switcher error:', mask(e.message).slice(0, 100)); }
+    try {
+      await page.goto('https://myaccount.enbridgegas.com/api/MyBillInfo/ViewBill', { waitUntil: 'load', timeout: 60000 });
+      await page.waitForTimeout(6000);
+      const txt = await page.innerText('body').catch(() => '');
+      log('VIEWBILL TEXT:', mask(txt).slice(0, 900));
+      const acct = ((txt.match(/Account (?:Number|#)[:\s]*([\d ]{6,})/i) || [])[1] || 'unknown').replace(/\s/g, '').slice(-4);
+      const dm = txt.match(/(?:Bill(?:ing)? date|Statement date|Date issued)[:\s]*([A-Za-z]+\.? \d{1,2}, \d{4})/i);
+      const am = txt.match(/(?:Total amount due|Amount due|Total due|Current charges)[:\s]*\$?([\d,]+\.\d{2})/i);
+      log('  parsed: acct ..' + acct, '| date', dm ? dm[1] : 'n/a', '| amount', am ? am[1] : 'n/a');
+      const pdf = await page.pdf({ format: 'Letter', printBackground: true });
+      const name = 'enbridge-pdfs/' + acct + '/login' + n + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
+      log('  PDF printed:', pdf.length, 'bytes | repo upload:', await uploadBinary(name, pdf));
+    } catch (e) { log('ViewBill print error:', mask(e.message).slice(0, 120)); }
 
     // 3) the account activity page (payment and bill history)
     try {
