@@ -57,5 +57,27 @@ async function run(log) {
       log('  ERROR for', item.id, ':', String(e.message).slice(0, 160));
     }
   }
+  if (live) { try { await module.exports.driveSync(log); } catch (e) { log('Drive copies error:', String(e.message).slice(0, 120)); } }
 }
-module.exports = { run, getJson, putJson };
+// Puts a copy of every sent bill into the Drive folder (once each; remembered in the ledger as driveId).
+async function driveSync(log) {
+  const drive = require('./drive');
+  if (!drive.enabled()) { log('Drive copies: not configured (needs GOOGLE_SA_JSON and DRIVE_FOLDER_ID)'); return; }
+  const queue = (await getJson('queue/send-queue.json')).data;
+  const items = (queue && queue.items) || [];
+  const ledger = await getJson('queue/sent-ledger.json');
+  const sent = (ledger.data && ledger.data.sent) || [];
+  let changed = 0;
+  for (const e of sent) {
+    if (e.driveId) continue;
+    const item = items.find((x) => x.id === e.id);
+    if (!item) continue;
+    try { e.driveId = await drive.upload(item.filename, await getBinary(item.pdf)); changed++; log('  DRIVE copy saved:', item.filename); }
+    catch (err) { log('  DRIVE error for', item.id, ':', String(err.message).slice(0, 120)); break; }
+  }
+  if (changed) { const fresh = await getJson('queue/sent-ledger.json'); const m = new Map(((fresh.data && fresh.data.sent) || []).map((x) => [x.id, x]));
+    for (const e of sent) if (e.driveId && m.has(e.id)) m.get(e.id).driveId = e.driveId;
+    await putJson('queue/sent-ledger.json', { sent: [...m.values()] }, fresh.sha, 'drive copies'); }
+  else log('Drive copies: nothing new to copy');
+}
+module.exports = { run, getJson, putJson, driveSync };
