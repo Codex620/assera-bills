@@ -138,11 +138,34 @@ async function runLogin(browser, n, user, pass) {
         });
         return [...new Set(out)].slice(0, 25);
       });
+      const pg = await page.evaluate(() => { const e = document.querySelector('.account-selector-pages'); const c = e && (e.closest('.account-selector-dynamic') || e.parentElement); return c ? c.outerHTML.replace(/\s+/g, ' ').slice(0, 1400) : 'none'; });
+      log('SELECTOR HTML:', mask(pg));
       log('SWITCHER CANDIDATES:', sw.map(mask).join(' ;; ').slice(0, 1800));
     } catch (e) { log('Switcher error:', mask(e.message).slice(0, 100)); }
     try {
       await page.goto('https://myaccount.enbridgegas.com/api/MyBillInfo/ViewBill', { waitUntil: 'load', timeout: 60000 });
       await page.waitForTimeout(6000);
+      const html = await page.content().catch(() => '');
+      const cands = [...new Set([...html.matchAll(/(?:src|href|data|data-[a-z-]+)=["']([^"']*(?:pdf|Pdf|PDF|bill|Bill)[^"']*)["']/g)].map((m) => m[1]))].slice(0, 12);
+      log('PDF CANDIDATES:', cands.map((c) => mask(c).slice(0, 110)).join(' ;; '));
+      log('FRAMES:', page.frames().map((f) => mask(f.url()).split('?')[0].slice(0, 100)).join(' ;; '));
+      for (const c of cands.filter((x) => !/^(#|javascript)/i.test(x)).slice(0, 6)) {
+        try {
+          const u = new URL(c, 'https://myaccount.enbridgegas.com/').href;
+          const r2 = await page.request.get(u, { timeout: 30000 });
+          const ct2 = (r2.headers()['content-type'] || '').toLowerCase();
+          const b2 = await r2.body();
+          log('  try', mask(u).split('?')[0].slice(0, 90), '=>', r2.status(), ct2.slice(0, 30), b2.length, 'bytes');
+          if (ct2.includes('pdf') && b2.length > 5000) {
+            fs.mkdirSync(path.join(OUT, 'enbridge'), { recursive: true });
+            const f2 = path.join(OUT, 'enbridge', 'login' + n + '-viewer.pdf');
+            fs.writeFileSync(f2, b2);
+            log('  REAL PDF TOP LINES:', JSON.stringify(pdfLines(f2, 40)));
+            log('  repo upload:', await uploadBinary('enbridge-pdfs/login' + n + '-real_' + new Date().toISOString().slice(0, 10) + '.pdf', b2));
+            break;
+          }
+        } catch (e) { log('  try error', mask(e.message).slice(0, 80)); }
+      }
       const txt = await page.innerText('body').catch(() => '');
       log('VIEWBILL TEXT:', mask(txt).slice(0, 900));
       const acct = ((txt.match(/Account (?:Number|#)[:\s]*([\d ]{6,})/i) || [])[1] || 'unknown').replace(/\s/g, '').slice(-4);
