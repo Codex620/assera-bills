@@ -161,7 +161,6 @@ async function runLogin(browser, n, user, pass) {
             const f2 = path.join(OUT, 'enbridge', 'login' + n + '-viewer.pdf');
             fs.writeFileSync(f2, b2);
             log('  REAL PDF TOP LINES:', JSON.stringify(pdfLines(f2, 40)));
-            log('  repo upload:', await uploadBinary('enbridge-pdfs/login' + n + '-real_' + new Date().toISOString().slice(0, 10) + '.pdf', b2));
             break;
           }
         } catch (e) { log('  try error', mask(e.message).slice(0, 80)); }
@@ -174,8 +173,51 @@ async function runLogin(browser, n, user, pass) {
       log('  parsed: acct ..' + acct, '| date', dm ? dm[1] : 'n/a', '| amount', am ? am[1] : 'n/a');
       const pdf = await page.pdf({ format: 'Letter', printBackground: true });
       const name = 'enbridge-pdfs/' + acct + '/login' + n + '_' + new Date().toISOString().slice(0, 10) + '.pdf';
-      log('  PDF printed:', pdf.length, 'bytes | repo upload:', await uploadBinary(name, pdf));
+      log('  (viewer page printed, not uploaded)', pdf.length, 'bytes');
     } catch (e) { log('ViewBill print error:', mask(e.message).slice(0, 120)); }
+
+    // 2c) v8: switch to each Assera account in the selector and watch the network while ViewBill loads
+    const TARGETS = (process.env.ENBRIDGE_TARGETS || '8570,6653,5793,6016,0096').split(',').map((x) => x.trim()).filter(Boolean);
+    for (const t of TARGETS) {
+      try {
+        await page.goto('https://myaccount.enbridgegas.com/my-account/my-bill', { waitUntil: 'load', timeout: 60000 });
+        await page.waitForTimeout(6000);
+        const found = await page.evaluate((x) => {
+          const el = [...document.querySelectorAll('.account-line')].find((e) => String(e.getAttribute('data-value') || '').endsWith(x));
+          if (!el) return false;
+          const open = document.querySelector('.service-address-selector, .interactive-account-selector');
+          if (open) open.click();
+          el.click();
+          return true;
+        }, t);
+        if (!found) { log('ACCOUNT ..' + t + ': not on page 1 of the selector'); continue; }
+        await page.waitForTimeout(9000);
+        const head = (await page.innerText('body').catch(() => '')).match(/Service Address:\s*(.+?)\s+Account Number:\s*(\d+)/);
+        log('ACCOUNT ..' + t + ': page now shows', head ? mask(head[1]).slice(0, 40) + ' (..' + head[2].slice(-4) + ')' : 'unknown');
+        const seen = [];
+        const onResp = async (resp) => {
+          try {
+            const u = resp.url();
+            if (/google|doubleclick|facebook|clarity|analytics|\.(png|jpe?g|gif|svg|css|woff2?)(\?|$)/i.test(u)) return;
+            const ct = (resp.headers()['content-type'] || '').toLowerCase();
+            const buf = ct.includes('pdf') || /octet|blob/.test(ct) ? await resp.body() : null;
+            seen.push({ u: mask(u).split('?')[0].slice(0, 100), ct: ct.slice(0, 28), st: resp.status(), size: buf ? buf.length : -1, buf });
+          } catch (e) {}
+        };
+        page.on('response', onResp);
+        await page.goto('https://myaccount.enbridgegas.com/api/MyBillInfo/ViewBill', { waitUntil: 'load', timeout: 60000 });
+        await page.waitForTimeout(12000);
+        page.off('response', onResp);
+        log('  network during ViewBill:', seen.filter((x) => !/\.js$/.test(x.u)).map((x) => x.st + ' ' + x.ct + ' ' + x.size + ' ' + x.u).join(' ;; ').slice(0, 1500));
+        const bill = seen.find((x) => x.buf && x.size > 5000 && /pdf/.test(x.ct) && !/Inserts/i.test(x.u));
+        if (bill) {
+          const f = path.join(OUT, 'enbridge', 'acct' + t + '.pdf');
+          fs.mkdirSync(path.join(OUT, 'enbridge'), { recursive: true });
+          fs.writeFileSync(f, bill.buf);
+          log('  BILL PDF', bill.size, 'bytes | top lines:', JSON.stringify(pdfLines(f, 40)));
+        } else log('  no bill PDF seen for ..' + t);
+      } catch (e) { log('ACCOUNT ..' + t + ' error:', mask(e.message).slice(0, 120)); }
+    }
 
     // 3) the account activity page (payment and bill history)
     try {
