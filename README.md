@@ -8,3 +8,4 @@ Robot that retrieves utility bills for Assera Property Group.
   and prints a short, masked report to the log. It sends nothing and changes nothing.
 
 Auto-deploy test: pushes to main redeploy the robots automatically.
+Auto-deploy check for both apps.
