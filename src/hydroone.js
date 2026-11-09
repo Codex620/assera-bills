@@ -112,6 +112,15 @@ async function runLogin(browser, n, user, pass) {
           return out;
         });
         log('  billed rows:', rows.length, '| toggles:', toggles.length);
+        if (process.env.DEBUG_BILLS === 'true') {
+          const snips = await page.evaluate((hs) => hs.map((h) => {
+            const el = document.querySelector('[href="' + h + '"]');
+            let n = el; for (let i = 0; i < 3 && n && n.parentElement; i++) n = n.parentElement;
+            return h.slice(1, 24) + ' :: ' + (n ? n.innerText : '').replace(/\s+/g, ' ').slice(0, 90);
+          }), toggles);
+          log('  DEBUG rows:', rows.map((r) => r.date + ' $' + r.amount).join(' | '));
+          snips.forEach((x, i) => log('  DEBUG toggle', i + 1, mask(x)));
+        }
 
         for (let k = 0; k < Math.min(BILL_LIMIT, rows.length, toggles.length); k++) {
           captured.length = 0;
@@ -128,6 +137,14 @@ async function runLogin(browser, n, user, pass) {
                 await link.click({ timeout: 8000, force: true }).catch(() => {});
                 for (let w = 0; w < 12 && !captured.length; w++) await sleep(page, 1000);
               }
+            }
+            if (!captured.length && process.env.DEBUG_BILLS === 'true') {
+              const info = await page.evaluate((i) => {
+                const el = document.getElementById(i);
+                if (!el) return { missing: true };
+                return { text: el.innerText.replace(/\s+/g, ' ').slice(0, 300), links: [...el.querySelectorAll('a,button')].map((x) => ((x.innerText || '').trim().slice(0, 30) + ' [' + (x.getAttribute('href') || '').slice(0, 50) + ']')) };
+              }, id);
+              log('  DEBUG panel', mask(JSON.stringify(info)).slice(0, 700));
             }
             if (!captured.length) { status = 'NO PDF CAPTURED'; }
             else {
