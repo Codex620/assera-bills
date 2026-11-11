@@ -111,6 +111,8 @@ async function loginAndLook(browser, key, n, user, pass) {
         try {
           if (r > 0) { await page.goto(feed, { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(6000); }
           captured.length = 0;
+          if (/PT-|Property Tax/i.test(rowTexts[r] || '')) { log('  row ' + (r + 1) + ': property tax account, skipped'); continue; }
+          if (/Invalid PIN/i.test(rowTexts[r] || '')) { log('  row ' + (r + 1) + ': NOT LINKED (Invalid PIN), cannot be read until the account is re-linked with the correct PIN'); continue; }
           await page.locator('table tbody tr').nth(r).click({ timeout: 10000 });
           await page.waitForTimeout(10000);
           await state('opened account row ' + (r + 1));
@@ -123,17 +125,29 @@ async function loginAndLook(browser, key, n, user, pass) {
             await state('billing summary (row ' + (r + 1) + ')');
             const bl = await page.$$eval('a, button', (els) => els.filter((e) => e.getClientRects().length > 0).map((e) => ((e.innerText || e.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 40) + ' [' + (e.getAttribute('href') || '').slice(0, 70) + ']')).filter((t) => /bill|invoice|facture|pdf|view|download|print|imprim|statement|relev/i.test(t)).slice(0, 20)).catch(() => []);
             log('  bill links in the summary:', mask(bl.join(' ;; ')).slice(0, 1000));
-            if (bl.length && !captured.length) {
+            log('  summary text:', mask(await page.innerText('body').catch(() => '')).slice(0, 1600));
+            const hrefs = await page.$$eval('a[href*="eDocs.aspx"]', (as) => [...new Set(as.map((a) => a.href))].slice(0, 6)).catch(() => []);
+            log('  View (eDocs) links found:', hrefs.length);
+            for (let k = 0; k < hrefs.length; k++) {
+              try {
+                const resp = await page.request.get(hrefs[k], { timeout: 60000 });
+                const ct = (resp.headers()['content-type'] || '').toLowerCase(); const body = await resp.body();
+                log('    View ' + (k + 1) + ': HTTP', resp.status(), ct.slice(0, 30), body.length, 'bytes');
+                if (ct.includes('pdf') && body.length > 3000) captured.push({ buf: body, name: 'edoc' + k });
+                else log('      start:', mask(body.toString('utf8').slice(0, 250)));
+              } catch (e) { log('    View ' + (k + 1) + ' error:', mask(e.message).slice(0, 100)); }
+            }
+            if (false && bl.length && !captured.length) {
               const target = page.locator('a, button').filter({ hasText: /view bill|download|pdf|bill|facture|print|statement/i }).first();
               if (await target.count().catch(() => 0)) { await target.click({ timeout: 8000 }).catch(() => {}); for (let w = 0; w < 30 && !captured.length; w++) await page.waitForTimeout(1000); }
             }
           } else log('  no Billing summary link on this account page');
           log('  PDFs captured for row ' + (r + 1) + ':', captured.length);
-          if (captured.length) {
-            const c = captured[0]; fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, 'rockland-' + r + '.pdf'); fs.writeFileSync(f, c.buf);
+          for (let ci = 0; ci < captured.length; ci++) {
+            const c = captured[ci]; fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, 'rockland-' + r + '-' + ci + '.pdf'); fs.writeFileSync(f, c.buf);
             let top = []; try { top = execFileSync('pdftotext', ['-layout', f, '-'], { encoding: 'utf8', timeout: 30000 }).split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 30).map((x) => mask(x).slice(0, 100)); } catch (e) {}
             log('  top lines:', JSON.stringify(top));
-            log('  repo upload:', await uploadBinary('rocklandwater-pdfs/row' + (r + 1) + '/' + new Date().toISOString().slice(0, 10) + '.pdf', c.buf));
+            log('  repo upload:', await uploadBinary('rocklandwater-pdfs/row' + (r + 1) + '/' + new Date().toISOString().slice(0, 10) + '_' + (ci + 1) + '.pdf', c.buf));
           }
         } catch (e) { log('  row ' + (r + 1) + ' error:', mask(e.message).slice(0, 140)); }
       }
