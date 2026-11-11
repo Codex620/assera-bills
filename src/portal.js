@@ -59,6 +59,14 @@ async function loginAndLook(browser, key, n, user, pass) {
     };
     if (!(await page.$('input[type=password]'))) { const u = await typeFirst(user, 'user'); if (u) { await press(u.f); await page.waitForTimeout(12000); s = await state('after user name'); } else log('  no user-name box found'); }
     if (s.captcha) { log('  STOP: a captcha is shown. The robot will not solve it.'); await context.close(); return; }
+    if (!(await page.$('input[type=password]:visible'))) {
+      // Some portals (Videotron) offer to email a link first: choose the password option instead.
+      for (const f of page.frames()) {
+        const opt = f.locator('a:visible, button:visible, [role=button]:visible, [role=link]:visible, label:visible').filter({ hasText: /(use|enter|sign in with|log in with|utiliser|entrer|connexion avec)?\s*(my |your |mon |votre )?(password|mot de passe)/i }).filter({ hasNotText: /forgot|oubli|reset|réinit/i }).first();
+        if (await opt.count().catch(() => 0)) { log('  choosing the password option'); await opt.click({ timeout: 8000 }).catch(() => {}); await page.waitForTimeout(8000); break; }
+      }
+      await state('after choosing password');
+    }
     const pw = await typeFirst(pass, 'pass');
     if (!pw) { log('  no password box found'); await context.close(); return; }
     await press(pw.f); await page.waitForTimeout(15000);
@@ -66,12 +74,15 @@ async function loginAndLook(browser, key, n, user, pass) {
     if (s.captcha || s.code) { log('  STOP: ' + (s.code ? 'a security code is requested' : 'a captcha is shown') + '. The robot will not enter codes or solve captchas.'); await context.close(); return; }
     // look for bill links and try to capture PDFs
     const links = await page.$$eval('a, button', (els) => els.filter((e) => e.offsetParent !== null).map((e) => ({ t: (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ').slice(0, 50), h: (e.getAttribute('href') || '').slice(0, 70) })).filter((x) => x.t));
-    const billish = links.filter((l) => BILL_WORDS.test(l.t) || BILL_WORDS.test(l.h)).slice(0, 12);
+    const first = /billing summary|sommaire de (la )?facturation|billing/i;
+    const billish = links.filter((l) => BILL_WORDS.test(l.t) || BILL_WORDS.test(l.h) || first.test(l.t)).sort((a, b) => (first.test(b.t) ? 1 : 0) - (first.test(a.t) ? 1 : 0)).slice(0, 12);
     log('  bill-related links:', mask(billish.map((l) => l.t + ' [' + l.h + ']').join(' ;; ')).slice(0, 900) || 'none');
     for (let i = 0; i < Math.min(3, billish.length) && !captured.length; i++) {
       const l = billish[i];
       await page.getByText(l.t, { exact: true }).first().click({ timeout: 8000 }).catch(() => {});
-      for (let w = 0; w < 15 && !captured.length; w++) await page.waitForTimeout(1000);
+      const slow = key === 'rocklandwater' ? 90 : 15; // Clarence-Rockland's billing summary is slow to load
+      for (let w = 0; w < slow && !captured.length; w++) await page.waitForTimeout(1000);
+      if (key === 'rocklandwater') { await state('billing summary after waiting'); const more = await page.$$eval('a, button', (els) => els.filter((e) => e.offsetParent !== null).map((e) => ((e.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 50) + ' [' + (e.getAttribute('href') || '').slice(0, 70) + ']')).filter((t) => /bill|invoice|facture|pdf|view|download|print|imprim/i.test(t)).slice(0, 15)); log('  links on this page:', mask(more.join(' ;; ')).slice(0, 900)); }
       if (!captured.length) await state('after clicking "' + mask(l.t) + '"');
     }
     log('  PDFs captured:', captured.length);
