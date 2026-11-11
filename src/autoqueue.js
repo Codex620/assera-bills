@@ -31,12 +31,12 @@ async function addIfNew(log, b) {
     const skip = (await getJson('queue/skip-list.json')).data || { skip: [] };
     if (queue.items.find((x) => x.id === id) || (ledger.sent || []).find((x) => x.id === id) || (skip.skip || []).includes(id)) return;
     const per = periodText(from, to);
-    const hydro = b.source === 'hydroone';
+    const L = { hydroone: ['Hydro One - ', 'HydroOne_', 'Statement issued '], enbridge: ['Enbridge Gas - ', 'Enbridge_', 'Bill date '], rocklandwater: ['Clarence-Rockland Water - ', 'RocklandWater_', 'Bill date '], ottawawater: ['Ottawa Water - ', 'OttawaWater_', 'Bill date '], bell: ['Bell - ', 'Bell_', 'Bill date '], videotron: ['Videotron - ', 'Videotron_', 'Bill date '] }[b.source] || [b.source + ' - ', b.source + '_', 'Bill date '];
     queue.items.push({
       id, pdf: b.pdfPath, sha256: crypto.createHash('sha256').update(b.pdf).digest('hex'),
-      filename: (hydro ? 'HydroOne_' : 'Enbridge_') + b.property.replace(/\s+/g, '-') + '_' + issued.iso + '_' + b.amount + '.pdf',
-      subject: (hydro ? 'Hydro One - ' : 'Enbridge Gas - ') + b.property + ' - ' + per + ' - $' + b.amount,
-      body: (hydro ? 'Statement issued ' : 'Bill date ') + issued.label + '. Account ending ' + b.acct + '. Property: ' + b.property + (b.note ? ' (' + b.note + ')' : '') + '. Billing period: ' + per + '.\nNew bill queued automatically by the Assera bills robot. Please match it to the Assera transaction.',
+      filename: L[1] + b.property.replace(/\s+/g, '-') + '_' + issued.iso + '_' + b.amount + '.pdf',
+      subject: L[0] + b.property + ' - ' + per + ' - $' + b.amount,
+      body: L[2] + issued.label + '. Account ending ' + b.acct + '. Property: ' + b.property + (b.note ? ' (' + b.note + ')' : '') + '. Billing period: ' + per + '.\nNew bill queued automatically by the Assera bills robot. Please match it to the Assera transaction.',
     });
     await putJson('queue/send-queue.json', queue, q.sha, 'auto-queue ' + id);
     log('  autoqueue: queued', id);

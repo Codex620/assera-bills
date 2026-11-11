@@ -103,6 +103,7 @@ async function loginAndLook(browser, key, n, user, pass) {
     if (s.captcha || s.code) { log('  STOP: ' + (s.code ? 'a security code is requested' : 'a captcha is shown') + '. The robot will not enter codes or solve captchas.'); await context.close(); return; }
     if (key === 'rocklandwater') {
       // City of Clarence-Rockland (iCity): accounts list -> click an account row -> Billing summary (slow to load) -> bill
+      let sumText = '';
       const feed = page.url();
       const rowCount = await page.locator('table tbody tr').count().catch(() => 0);
       const rowTexts = await page.$$eval('table tbody tr', (trs) => trs.slice(0, 10).map((t) => (t.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 140))).catch(() => []);
@@ -125,7 +126,8 @@ async function loginAndLook(browser, key, n, user, pass) {
             await state('billing summary (row ' + (r + 1) + ')');
             const bl = await page.$$eval('a, button', (els) => els.filter((e) => e.getClientRects().length > 0).map((e) => ((e.innerText || e.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 40) + ' [' + (e.getAttribute('href') || '').slice(0, 70) + ']')).filter((t) => /bill|invoice|facture|pdf|view|download|print|imprim|statement|relev/i.test(t)).slice(0, 20)).catch(() => []);
             log('  bill links in the summary:', mask(bl.join(' ;; ')).slice(0, 1000));
-            log('  summary text:', mask(await page.innerText('body').catch(() => '')).slice(0, 1600));
+            sumText = await page.innerText('body').catch(() => '');
+            log('  summary text:', mask(sumText).slice(0, 1600));
             const hrefs = await page.$$eval('a[href*="eDocs.aspx"]', (as) => [...new Set(as.map((a) => a.href))].slice(0, 6)).catch(() => []);
             log('  View (eDocs) links found:', hrefs.length);
             for (let k = 0; k < hrefs.length; k++) {
@@ -148,6 +150,24 @@ async function loginAndLook(browser, key, n, user, pass) {
             let top = []; try { top = execFileSync('pdftotext', ['-layout', f, '-'], { encoding: 'utf8', timeout: 30000 }).split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 30).map((x) => mask(x).slice(0, 100)); } catch (e) {}
             log('  top lines:', JSON.stringify(top));
             log('  repo upload:', await uploadBinary('rocklandwater-pdfs/row' + (r + 1) + '/' + new Date().toISOString().slice(0, 10) + '_' + (ci + 1) + '.pdf', c.buf));
+            try {
+              // The newest bill is the first row of the Billing Summary table: date, View, amount, bill from, bill to.
+              const m = sumText.match(/(\d{1,2}\/\d{1,2}\/\d{4})\s+View\s+\$([\d,]+\.\d{2})\s+(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}\/\d{1,2}\/\d{4})/);
+              const txt = execFileSync('pdftotext', ['-layout', f, '-'], { encoding: 'utf8', timeout: 30000 });
+              const addr = ((txt.match(/Service Address[^:\n]*:\s*(\d+ [A-Z][A-Z ]*?)\s*(?:\n|\*|\s{2,}|$)/) || [])[1] || '').trim();
+              const bd = (txt.match(/Billing Date[^:\n]*:\s*(\d{1,2})-([A-Za-z]{3})-(\d{4})/) || []);
+              const acctNo = ((txt.match(/Account #[^:\n]*:\s*([\d ]+)/) || [])[1] || '').replace(/\s/g, '');
+              const props = JSON.parse(process.env.ROCKLAND_PROPERTY_MAP || '{"715 POWERS":"715 Powers St","717 POWERS":"717 Powers St"}');
+              const mdy = (x) => { const a = x.split('/'); return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+a[0] - 1] + ' ' + (+a[1]) + ', ' + a[2]; };
+              if (m && bd.length && props[addr] && acctNo) {
+                const issued = bd[2] + ' ' + (+bd[1]) + ', ' + bd[3];
+                if (mdy(m[1]) === issued) {
+                  const pdfPath = 'rocklandwater-pdfs/' + acctNo.slice(-4) + '/' + new Date(issued).toISOString().slice(0, 10) + '_' + m[2].replace(',', '') + '.pdf';
+                  await uploadBinary(pdfPath, c.buf);
+                  await require('./autoqueue').addIfNew(log, { source: 'rocklandwater', acct: acctNo.slice(-4), amount: m[2].replace(',', ''), issued, periodFrom: mdy(m[3]), periodTo: mdy(m[4]), property: props[addr], note: 'City of Clarence-Rockland water and sewer', pdfPath, pdf: c.buf });
+                } else log('  not queued: first summary row (' + m[1] + ') is not this bill (' + issued + ')');
+              } else log('  not queued: could not read the bill details (address "' + mask(addr) + '")');
+            } catch (e) { log('  autoqueue skipped:', mask(e.message).slice(0, 100)); }
           }
         } catch (e) { log('  row ' + (r + 1) + ' error:', mask(e.message).slice(0, 140)); }
       }
