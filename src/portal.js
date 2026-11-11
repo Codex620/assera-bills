@@ -15,8 +15,8 @@ const OUT = process.env.DATA_DIR || '/data';
 const mask = (s) => String(s || '').replace(/\d{5,}/g, (m) => '..' + m.slice(-4)).replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, '[email]').replace(/\(?\d{3}\)?[ -]\d{3}-\d{4}/g, '[phone]').replace(/\s+/g, ' ');
 const log = (...a) => console.log(...a);
 const PROVIDERS = {
-  bell: { label: 'Bell', env: 'BELL', urls: ['https://m.bell.ca/bbebillviewbille', 'https://identification.bell.ca/'] },
-  videotron: { label: 'Videotron', env: 'VIDEOTRON', urls: ['https://www.videotron.com/en/login'] },
+  bell: { label: 'Bell', env: 'BELL', urls: ['https://identification.bell.ca/', 'https://www.bell.ca/'] },
+  videotron: { label: 'Videotron', env: 'VIDEOTRON', urls: ['https://www.videotron.com/en/'] },
   ottawawater: { label: 'Ottawa water', env: 'OTTAWAWATER', urls: [process.env.OTTAWAWATER_URL].filter(Boolean) },
   rocklandwater: { label: 'Clarence-Rockland water', env: 'ROCKLANDWATER', urls: [process.env.ROCKLANDWATER_URL].filter(Boolean) },
 };
@@ -31,13 +31,20 @@ async function loginAndLook(browser, key, n, user, pass) {
   context.on('response', async (resp) => { try { if ((resp.headers()['content-type'] || '').toLowerCase().includes('pdf') && resp.status() === 200) { const b = await resp.body(); if (b.length > 3000) captured.push({ buf: b, name: 'resp' }); } } catch (e) {} });
   page.on('download', async (d) => { try { const f = path.join(OUT, 'dl-' + Date.now() + '.pdf'); await d.saveAs(f); captured.push({ buf: fs.readFileSync(f), name: mask(d.suggestedFilename()) }); fs.unlinkSync(f); } catch (e) {} });
   const state = async (label) => {
-    const html = (await page.content().catch(() => '')).toLowerCase();
     const text = (await page.innerText('body').catch(() => ''));
     const t = text.toLowerCase();
+    const challenge = await page.evaluate(() => {
+      const vis = (e) => e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden';
+      const fr = [...document.querySelectorAll('iframe')].some((f) => /recaptcha\/(api2|enterprise)\/bframe|hcaptcha.*challenge|challenges\.cloudflare/i.test(f.src || '') && vis(f) && f.getBoundingClientRect().height > 60);
+      const px = !!document.querySelector('#px-captcha');
+      return fr || (px && vis(document.querySelector('#px-captcha')));
+    }).catch(() => false) || /i'?m not a robot|verify (that )?you('| a)re (a )?human|je ne suis pas un robot|press (and|&) hold/i.test(t);
+    const hasPw = !!(await page.$('input[type=password]:visible').catch(() => null));
+    const codeAsk = !hasPw && /verification code|enter the code|passcode|code de vérification|enter the \d.digit/.test(t);
     log('  [' + label + '] ' + mask(page.url()).split('?')[0].slice(0, 100) + ' | title: ' + mask(await page.title().catch(() => '')).slice(0, 60));
-    log('    captcha:', /captcha|turnstile|px-captcha/.test(html), '| asks for a code:', /verification code|one-time|passcode|enter the code|code de vérification|text message|sms/.test(t), '| error words:', /incorrect|invalid|locked|try again|erreur|invalide/.test(t));
+    log('    captcha challenge visible:', challenge, '| asks for a code:', codeAsk, '| error words:', /incorrect|invalid|locked|try again|erreur|invalide/.test(t));
     log('    text:', mask(text).slice(0, 300));
-    return { captcha: /captcha|turnstile|px-captcha/.test(html), code: /verification code|one-time|passcode|enter the code|code de vérification/.test(t) };
+    return { captcha: challenge, code: codeAsk };
   };
   try {
     let opened = false;
@@ -47,7 +54,8 @@ async function loginAndLook(browser, key, n, user, pass) {
     let s = await state('opened');
     const typeFirst = async (value, kind) => {
       for (const f of page.frames()) {
-        const sel = kind === 'pass' ? 'input[type=password]:visible' : 'input[type=email]:visible, input[name=identifier]:visible, input[name=username]:visible, input[id*=user i]:visible, input[id*=email i]:visible, input[type=text]:visible';
+        const NOT = ':not(footer *):not([class*=newsletter i] *):not([class*=infolettre i] *):not([id*=newsletter i]):not([name*=newsletter i]):not([id*=infolettre i]):not([name*=infolettre i]):not([name*=search i]):not([id*=search i]):not([type=search])';
+        const sel = kind === 'pass' ? 'input[type=password]:visible' : ['input[type=email]', 'input[name=identifier]', 'input[name=username]', 'input[id*=user i]', 'input[id*=email i]', 'input[type=text]'].map((x) => x + ':visible' + NOT).join(', ');
         const el = f.locator(sel).first();
         if (await el.count().catch(() => 0)) { await el.fill(value, { timeout: 8000 }).catch(() => {}); return { f, el }; }
       }
@@ -57,6 +65,11 @@ async function loginAndLook(browser, key, n, user, pass) {
       const b = f.locator('button:visible, input[type=submit]:visible').filter({ hasText: /next|continue|suivant|continuer|sign in|log in|login|connexion|se connecter|submit|ok/i }).first();
       if (await b.count().catch(() => 0)) await b.click({ timeout: 8000 }).catch(() => {}); else await page.keyboard.press('Enter');
     };
+    const haveBox = async () => { for (const f of page.frames()) { if (await f.locator('input[type=password]:visible, input[name=identifier]:visible, input[name=username]:visible').count().catch(() => 0)) return true; } return false; };
+    if (!(await haveBox())) {
+      const lk = page.locator('a:visible, button:visible').filter({ hasText: /^\s*(log ?in|sign ?in|connexion|se connecter|my account|mon compte)\s*$/i }).first();
+      if (await lk.count().catch(() => 0)) { log('  clicking the site\'s sign-in link'); await lk.click({ timeout: 8000 }).catch(() => {}); await page.waitForTimeout(12000); s = await state('after sign-in link'); }
+    }
     if (!(await page.$('input[type=password]'))) { const u = await typeFirst(user, 'user'); if (u) { await press(u.f); await page.waitForTimeout(12000); s = await state('after user name'); } else log('  no user-name box found'); }
     if (s.captcha) { log('  STOP: a captcha is shown. The robot will not solve it.'); await context.close(); return; }
     if (!(await page.$('input[type=password]:visible'))) {
