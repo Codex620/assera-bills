@@ -30,6 +30,7 @@ async function loginAndLook(browser, key, n, user, pass) {
   const captured = [];
   context.on('response', async (resp) => { try { if ((resp.headers()['content-type'] || '').toLowerCase().includes('pdf') && resp.status() === 200) { const b = await resp.body(); if (b.length > 3000) captured.push({ buf: b, name: 'resp' }); } } catch (e) {} });
   page.on('download', async (d) => { try { const f = path.join(OUT, 'dl-' + Date.now() + '.pdf'); await d.saveAs(f); captured.push({ buf: fs.readFileSync(f), name: mask(d.suggestedFilename()) }); fs.unlinkSync(f); } catch (e) {} });
+  page.on('requestfailed', (r) => { if (r.isNavigationRequest()) log('    navigation failed:', mask(r.url()).split('?')[0].slice(0, 100), '|', mask(r.failure() && r.failure().errorText).slice(0, 50)); });
   const state = async (label) => {
     const text = (await page.innerText('body').catch(() => ''));
     const t = text.toLowerCase();
@@ -57,7 +58,15 @@ async function loginAndLook(browser, key, n, user, pass) {
         const NOT = ':not(footer *):not([class*=newsletter i] *):not([class*=infolettre i] *):not([id*=newsletter i]):not([name*=newsletter i]):not([id*=infolettre i]):not([name*=infolettre i]):not([name*=search i]):not([id*=search i]):not([type=search])';
         const sel = kind === 'pass' ? 'input[type=password]:visible' : ['input[type=email]', 'input[name=identifier]', 'input[name=username]', 'input[id*=user i]', 'input[id*=email i]', 'input[type=text]'].map((x) => x + ':visible' + NOT).join(', ');
         const el = f.locator(sel).first();
-        if (await el.count().catch(() => 0)) { await el.fill(value, { timeout: 8000 }).catch(() => {}); return { f, el }; }
+        if (await el.count().catch(() => 0)) {
+          const desc = await el.evaluate((e) => e.tagName.toLowerCase() + '[type=' + e.type + ' name=' + (e.name || '') + ' id=' + (e.id || '') + ']').catch(() => '?');
+          await el.fill(value, { timeout: 8000 }).catch(() => {});
+          let got = await el.inputValue().catch(() => '');
+          if (got.length !== value.length) { await el.click({ timeout: 5000 }).catch(() => {}); await el.fill('').catch(() => {}); await el.pressSequentially(value, { delay: 40 }).catch(() => {}); got = await el.inputValue().catch(() => ''); }
+          const ok = got === value;
+          log('    ' + kind + ' field ' + mask(desc) + ': holds the expected text ' + (ok ? 'yes' : 'NO (' + got.length + ' of ' + value.length + ' characters)'));
+          return ok ? { f, el } : { f, el, bad: true };
+        }
       }
       return null;
     };
@@ -70,7 +79,7 @@ async function loginAndLook(browser, key, n, user, pass) {
       const lk = page.locator('a:visible, button:visible').filter({ hasText: /^\s*(log ?in|sign ?in|connexion|se connecter|my account|mon compte)\s*$/i }).first();
       if (await lk.count().catch(() => 0)) { log('  clicking the site\'s sign-in link'); await lk.click({ timeout: 8000 }).catch(() => {}); await page.waitForTimeout(12000); s = await state('after sign-in link'); }
     }
-    if (!(await page.$('input[type=password]'))) { const u = await typeFirst(user, 'user'); if (u) { await press(u.f); await page.waitForTimeout(12000); s = await state('after user name'); } else log('  no user-name box found'); }
+    if (!(await page.$('input[type=password]'))) { const u = await typeFirst(user, 'user'); if (u && u.bad) { log('  STOP: the user-name box did not accept the text, nothing submitted.'); await context.close(); return; } if (u) { await press(u.f); await page.waitForTimeout(12000); s = await state('after user name'); } else log('  no user-name box found'); }
     if (s.captcha) { log('  STOP: a captcha is shown. The robot will not solve it.'); await context.close(); return; }
     if (!(await page.$('input[type=password]:visible'))) {
       // Some portals (Videotron) offer to email a link first: choose the password option instead.
@@ -81,7 +90,8 @@ async function loginAndLook(browser, key, n, user, pass) {
       await state('after choosing password');
     }
     const pw = await typeFirst(pass, 'pass');
-    if (!pw) { log('  no password box found'); await context.close(); return; }
+    if (!pw) { log('  no password box found'); const vis = await page.$$eval('a, button, [role=button], [role=link]', (els) => els.filter((e) => e.getClientRects().length > 0).map((e) => ((e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').slice(0, 30) + '[' + (e.getAttribute('href') || '').slice(0, 45) + ']')).filter((t) => t.length > 2).slice(0, 40)); log('  visible links/buttons:', mask(vis.join(' ;; ')).slice(0, 1500)); await context.close(); return; }
+    if (pw.bad) { log('  STOP: the password box did not accept the text, nothing submitted.'); await context.close(); return; }
     await press(pw.f); await page.waitForTimeout(15000);
     s = await state('after password');
     if (s.captcha || s.code) { log('  STOP: ' + (s.code ? 'a security code is requested' : 'a captcha is shown') + '. The robot will not enter codes or solve captchas.'); await context.close(); return; }
