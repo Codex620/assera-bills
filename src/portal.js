@@ -101,6 +101,44 @@ async function loginAndLook(browser, key, n, user, pass) {
     await press(pw.f); await page.waitForTimeout(15000);
     s = await state('after password');
     if (s.captcha || s.code) { log('  STOP: ' + (s.code ? 'a security code is requested' : 'a captcha is shown') + '. The robot will not enter codes or solve captchas.'); await context.close(); return; }
+    if (key === 'rocklandwater') {
+      // City of Clarence-Rockland (iCity): accounts list -> click an account row -> Billing summary (slow to load) -> bill
+      const feed = page.url();
+      const rowCount = await page.locator('table tbody tr').count().catch(() => 0);
+      const rowTexts = await page.$$eval('table tbody tr', (trs) => trs.slice(0, 10).map((t) => (t.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 140))).catch(() => []);
+      log('  accounts list rows:', rowCount, '|', mask(rowTexts.join(' ;; ')).slice(0, 900));
+      for (let r = 0; r < Math.min(rowCount, 6); r++) {
+        try {
+          if (r > 0) { await page.goto(feed, { waitUntil: 'load', timeout: 60000 }); await page.waitForTimeout(6000); }
+          captured.length = 0;
+          await page.locator('table tbody tr').nth(r).click({ timeout: 10000 });
+          await page.waitForTimeout(10000);
+          await state('opened account row ' + (r + 1));
+          const tabs = await page.$$eval('a, button, li', (els) => els.filter((e) => e.getClientRects().length > 0).map((e) => (e.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 30)).filter((t) => t && t.length < 30)).catch(() => []);
+          log('  tabs/links here:', mask([...new Set(tabs)].slice(0, 40).join(' ;; ')).slice(0, 700));
+          const bs = page.getByText(/billing summary|sommaire de (la )?facturation/i).first();
+          if (await bs.count().catch(() => 0)) {
+            await bs.click({ timeout: 10000 }).catch(() => {});
+            for (let w = 0; w < 90; w++) { await page.waitForTimeout(1000); const t = (await page.innerText('body').catch(() => '')); if (captured.length || /\$\s?\d|balance|solde|statement|facture/i.test(t) && w > 10) break; }
+            await state('billing summary (row ' + (r + 1) + ')');
+            const bl = await page.$$eval('a, button', (els) => els.filter((e) => e.getClientRects().length > 0).map((e) => ((e.innerText || e.getAttribute('title') || '').trim().replace(/\s+/g, ' ').slice(0, 40) + ' [' + (e.getAttribute('href') || '').slice(0, 70) + ']')).filter((t) => /bill|invoice|facture|pdf|view|download|print|imprim|statement|relev/i.test(t)).slice(0, 20)).catch(() => []);
+            log('  bill links in the summary:', mask(bl.join(' ;; ')).slice(0, 1000));
+            if (bl.length && !captured.length) {
+              const target = page.locator('a, button').filter({ hasText: /view bill|download|pdf|bill|facture|print|statement/i }).first();
+              if (await target.count().catch(() => 0)) { await target.click({ timeout: 8000 }).catch(() => {}); for (let w = 0; w < 30 && !captured.length; w++) await page.waitForTimeout(1000); }
+            }
+          } else log('  no Billing summary link on this account page');
+          log('  PDFs captured for row ' + (r + 1) + ':', captured.length);
+          if (captured.length) {
+            const c = captured[0]; fs.mkdirSync(OUT, { recursive: true }); const f = path.join(OUT, 'rockland-' + r + '.pdf'); fs.writeFileSync(f, c.buf);
+            let top = []; try { top = execFileSync('pdftotext', ['-layout', f, '-'], { encoding: 'utf8', timeout: 30000 }).split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 30).map((x) => mask(x).slice(0, 100)); } catch (e) {}
+            log('  top lines:', JSON.stringify(top));
+            log('  repo upload:', await uploadBinary('rocklandwater-pdfs/row' + (r + 1) + '/' + new Date().toISOString().slice(0, 10) + '.pdf', c.buf));
+          }
+        } catch (e) { log('  row ' + (r + 1) + ' error:', mask(e.message).slice(0, 140)); }
+      }
+      await context.close(); return;
+    }
     // look for bill links and try to capture PDFs
     const links = await page.$$eval('a, button', (els) => els.filter((e) => e.offsetParent !== null).map((e) => ({ t: (e.innerText || e.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ').slice(0, 50), h: (e.getAttribute('href') || '').slice(0, 70) })).filter((x) => x.t));
     const first = /billing summary|sommaire de (la )?facturation|billing/i;
