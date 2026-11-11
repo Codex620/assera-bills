@@ -16,7 +16,7 @@ const mask = (s) => String(s || '').replace(/\d{5,}/g, (m) => '..' + m.slice(-4)
 const log = (...a) => console.log(...a);
 const PROVIDERS = {
   bell: { label: 'Bell', env: 'BELL', urls: ['https://identification.bell.ca/', 'https://www.bell.ca/'] },
-  videotron: { label: 'Videotron', env: 'VIDEOTRON', urls: ['https://www.videotron.com/en/'] },
+  videotron: { label: 'Videotron', env: 'VIDEOTRON', urls: ['https://www.videotron.com/en/signin', 'https://www.videotron.com/en/'] },
   ottawawater: { label: 'Ottawa water', env: 'OTTAWAWATER', urls: [process.env.OTTAWAWATER_URL].filter(Boolean) },
   rocklandwater: { label: 'Clarence-Rockland water', env: 'ROCKLANDWATER', urls: [process.env.ROCKLANDWATER_URL].filter(Boolean) },
 };
@@ -79,7 +79,13 @@ async function loginAndLook(browser, key, n, user, pass) {
       const lk = page.locator('a:visible, button:visible').filter({ hasText: /^\s*(log ?in|sign ?in|connexion|se connecter|my account|mon compte)\s*$/i }).first();
       if (await lk.count().catch(() => 0)) { log('  clicking the site\'s sign-in link'); await lk.click({ timeout: 8000 }).catch(() => {}); await page.waitForTimeout(12000); s = await state('after sign-in link'); }
     }
-    if (!(await page.$('input[type=password]'))) { const u = await typeFirst(user, 'user'); if (u && u.bad) { log('  STOP: the user-name box did not accept the text, nothing submitted.'); await context.close(); return; } if (u) { await press(u.f); await page.waitForTimeout(12000); s = await state('after user name'); } else log('  no user-name box found'); }
+    {
+      const pwNow = !!(await page.$('input[type=password]:visible'));
+      const u = await typeFirst(user, 'user'); // always type the user name first, also on one-page forms
+      if (u && u.bad) { log('  STOP: the user-name box did not accept the text, nothing submitted.'); await context.close(); return; }
+      if (u && !pwNow) { await press(u.f); await page.waitForTimeout(12000); s = await state('after user name'); }
+      else if (!u && !pwNow) log('  no user-name box found');
+    }
     if (s.captcha) { log('  STOP: a captcha is shown. The robot will not solve it.'); await context.close(); return; }
     if (!(await page.$('input[type=password]:visible'))) {
       // Some portals (Videotron) offer to email a link first: choose the password option instead.
